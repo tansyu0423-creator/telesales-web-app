@@ -13,8 +13,8 @@ class CallRecord(Base):
     audio_file_path = Column(String(255))       
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
-    transcripts = relationship("Transcript", back_populates="call_record")
-    analysis = relationship("AnalysisResult", back_populates="call_record", uselist=False)
+    transcripts = relationship("Transcript", back_populates="call_record", lazy="selectin")
+    analysis = relationship("AnalysisResult", back_populates="call_record", uselist=False, lazy="selectin")
 
 class Transcript(Base):
     __tablename__ = "transcripts"
