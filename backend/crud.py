@@ -3,7 +3,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # 変更点: db.query() の代わりに select を使うためのインポート
 from sqlalchemy import select
 
-import models, schemas
+try:
+    from . import models, schemas
+except ImportError:
+    import models, schemas
 
 # 通話記録の作成 (Create) - これはバッチリです！型の部分だけ変更しました
 async def create_call_record(db: AsyncSession, record: schemas.CallRecordCreate):
