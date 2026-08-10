@@ -3,6 +3,7 @@ import sys
 import pytest
 import io
 from httpx import AsyncClient, ASGITransport
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -56,3 +57,42 @@ async def test_upload_audio():
         res_data = response.json()
         assert "saved_filename" in res_data
         assert res_data["original_filename"] == "test_call.wav"
+
+@pytest.mark.asyncio
+async def test_analyze_and_export_csv():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        # 1. テスト用通話レコードの作成
+        payload = {
+            "sales_code": "REP_TEST",
+            "customer_phone": "090-0000-1111",
+            "call_duration": 150,
+            "audio_file_path": "sample.wav"
+        }
+        post_resp = await ac.post("/records/", json=payload)
+        record_id = post_resp.json()["id"]
+        # 2. LLM役割同定のモックテスト
+        mock_roles = [
+            {"start": 0.0, "end": 5.0, "text": "こんにちは", "speaker": "Sales"}
+        ]
+        with patch("main.llm_analysis.identify_roles_by_llm", return_value=mock_roles):
+            pass
+        csv_resp = await ac.get(f"/records/{record_id}/export/csv")
+        assert csv_resp.status_code == 200
+        assert "text/csv" in csv_resp.headers.get("content-type", "")
+        assert "REP_TEST" in csv_resp.text
+
+@pytest.mark.asyncio
+async def test_merge_and_role_identification():
+    from llm_analysis import merge_whisper_and_diarization
+    whisper_segs = [
+        {"start": 0.0, "end": 4.0, "text": "お世話になります。サービスのご案内です。"},
+        {"start": 4.5, "end": 9.0, "text": "はい、詳しく聞かせてください。"}
+    ]
+    diarization_segs = [
+        {"start": 0.0, "end": 4.2, "speaker_id": "SPEAKER_00"},
+        {"start": 4.3, "end": 9.5, "speaker_id": "SPEAKER_01"}
+    ]
+    merged = merge_whisper_and_diarization(whisper_segs, diarization_segs)
+    assert len(merged) == 2
+    assert merged[0]["temp_speaker"] == "SPEAKER_00"
+    assert merged[1]["temp_speaker"] == "SPEAKER_01"

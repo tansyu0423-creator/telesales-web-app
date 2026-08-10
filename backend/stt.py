@@ -1,7 +1,10 @@
 import os
 from typing import Any
 from groq import Groq
-from .config import settings
+try:
+    from .config import settings
+except ImportError:
+    from config import settings
 
 # Groqクライアントの初期化 (.envのキーを自動で読み込みます)
 client = Groq(api_key=settings.groq_api_key)

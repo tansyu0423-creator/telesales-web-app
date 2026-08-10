@@ -27,3 +27,21 @@ async def get_call_records(db: AsyncSession, skip: int = 0, limit: int = 100):
 async def get_call_record(db: AsyncSession, record_id: int):
     result = await db.execute(select(models.CallRecord).where(models.CallRecord.id == record_id))
     return result.scalars().first()
+
+# AnalysisResult の作成・更新
+async def create_or_update_analysis_result(db: AsyncSession, record_id: int, analysis_data: dict):
+    result = await db.execute(select(models.AnalysisResult).where(models.AnalysisResult.call_record_id == record_id))
+    existing = result.scalars().first()
+
+    if existing:
+        for k, v in analysis_data.items():
+            setattr(existing, k, v)
+        await db.commit()
+        await db.refresh(existing)
+        return existing
+    else:
+        new_analysis = models.AnalysisResult(call_record_id=record_id, **analysis_data)
+        db.add(new_analysis)
+        await db.commit()
+        await db.refresh(new_analysis)
+        return new_analysis
