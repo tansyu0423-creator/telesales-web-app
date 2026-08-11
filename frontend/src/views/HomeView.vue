@@ -1,20 +1,22 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
+import axios from 'axios'
+
+const api = axios.create({
+  baseURL: 'http://localhost:8000'
+})
 
 const records = ref([])
 const loading = ref(true)
-const selectedRank = ref('ALL') // ランクフィルター ('ALL', 'S', 'A', 'B', 'C', 'D', 'E')
-const activeRecordId = ref(null) // 詳細展開中のレコードID
-const actionLoading = ref({}) // 処理中フラグ { [recordId_action]: true }
+const selectedRank = ref('ALL')
+const activeRecordId = ref(null)
+const actionLoading = ref({})
 
-// 通話レコード一覧の取得
 const fetchRecords = async () => {
   loading.value = true
   try {
-    const res = await fetch('http://localhost:8000/records/')
-    if (res.ok) {
-      records.value = await res.json()
-    }
+    const res = await api.get('/records/')
+    records.value = res.data
   } catch (err) {
     console.error('Fetch records error:', err)
   } finally {
@@ -22,58 +24,50 @@ const fetchRecords = async () => {
   }
 }
 
-// ランクでフィルタリングしたレコード一覧
 const filteredRecords = computed(() => {
   if (selectedRank.value === 'ALL') return records.value
   return records.value.filter(r => r.analysis && r.analysis.rank === selectedRank.value)
 })
 
-// 文字起こし (STT + 話者識別) 実行
 const handleTranscribe = async (recordId) => {
   actionLoading.value[`${recordId}_transcribe`] = true
   try {
-    const res = await fetch(`http://localhost:8000/records/${recordId}/transcribe`, { method: 'POST' })
-    if (!res.ok) throw new Error('文字起こしに失敗しました')
+    await api.post(`/records/${recordId}/transcribe`)
     await fetchRecords()
   } catch (err) {
-    alert(err.message)
+    const msg = err.response?.data?.detail || '文字起こしに失敗しました'
+    alert(msg)
   } finally {
     actionLoading.value[`${recordId}_transcribe`] = false
   }
 }
 
-// AI分析 (スコアリング) 実行
 const handleAnalyze = async (recordId) => {
   actionLoading.value[`${recordId}_analyze`] = true
   try {
-    const res = await fetch(`http://localhost:8000/records/${recordId}/analyze`, { method: 'POST' })
-    if (!res.ok) {
-      const errData = await res.json()
-      throw new Error(errData.detail || 'AI分析に失敗しました。先に文字起こしを実行してください。')
-    }
+    await api.post(`/records/${recordId}/score`)
     await fetchRecords()
   } catch (err) {
-    alert(err.message)
+    const msg = err.response?.data?.detail || 'AI分析に失敗しました。先に文字起こしを実行してください。'
+    alert(msg)
   } finally {
     actionLoading.value[`${recordId}_analyze`] = false
   }
 }
 
-// CSVダウンロード
 const handleExportCsv = (recordId) => {
   window.open(`http://localhost:8000/records/${recordId}/export/csv`, '_blank')
 }
 
-// ランクに応じたスタイルクラスの取得
 const getRankBadgeClass = (rank) => {
   switch (rank) {
-    case 'S': return 'badge-s'
-    case 'A': return 'badge-a'
-    case 'B': return 'badge-b'
-    case 'C': return 'badge-c'
-    case 'D': return 'badge-d'
-    case 'E': return 'badge-e'
-    default: return 'badge-default'
+    case 'S': return 'bg-purple-600 text-white'
+    case 'A': return 'bg-green-600 text-white'
+    case 'B': return 'bg-blue-600 text-white'
+    case 'C': return 'bg-yellow-500 text-slate-900'
+    case 'D': return 'bg-orange-500 text-white'
+    case 'E': return 'bg-red-600 text-white'
+    default: return 'bg-slate-600 text-slate-200'
   }
 }
 
@@ -83,118 +77,142 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="dashboard-container">
-    <header class="dash-header">
+  <div class="max-w-5xl mx-auto px-4 py-8 text-slate-100">
+    <header class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
       <div>
-        <h2>テレセールス・アナリティクス・ダッシュボード</h2>
-        <p class="subtitle">通話データの文字起こし・話者識別・LLMスコアリング (S〜Eランク) 管理画面</p>
+        <h2 class="text-2xl font-bold tracking-tight text-white">テレセールス・アナリティクス・ダッシュボード</h2>
+        <p class="text-sm text-slate-400 mt-1">通話データの文字起こし・話者識別・LLMスコアリング (S〜Eランク) 管理画面</p>
       </div>
-      <button @click="fetchRecords" class="btn-refresh">データ更新</button>
+      <button 
+        @click="fetchRecords" 
+        class="px-4 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 rounded-lg text-sm font-medium transition-colors cursor-pointer"
+      >
+        🔄 データ更新
+      </button>
     </header>
 
-    <!-- ランク別フィルタータブ -->
-    <div class="filter-bar">
-      <span class="filter-label">ランクで絞り込み:</span>
+    <div class="flex items-center gap-2 mb-6 bg-slate-800/50 p-3 rounded-xl border border-slate-800 flex-wrap">
+      <span class="text-xs font-semibold text-slate-400 mr-2 uppercase tracking-wider">ランクで絞り込み:</span>
       <button 
         v-for="rank in ['ALL', 'S', 'A', 'B', 'C', 'D', 'E']" 
         :key="rank"
-        :class="['filter-btn', selectedRank === rank ? 'active' : '']"
+        :class="[
+          'px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer border',
+          selectedRank === rank 
+            ? 'bg-sky-500 text-slate-950 border-sky-400 shadow-md shadow-sky-500/20' 
+            : 'bg-slate-900/60 text-slate-400 border-slate-700 hover:border-slate-500 hover:text-slate-200'
+        ]"
         @click="selectedRank = rank"
       >
         {{ rank === 'ALL' ? 'すべて' : rank + ' ランク' }}
       </button>
     </div>
 
-    <!-- 状態表示 -->
-    <div v-if="loading" class="state-box">通話データを読み込んでいます...</div>
-    <div v-else-if="filteredRecords.length === 0" class="state-box">該当する通話データが存在しません。</div>
+    <div v-if="loading" class="text-center py-12 bg-slate-800/30 rounded-2xl border border-slate-800 text-slate-400">
+      <div class="animate-pulse flex flex-col items-center gap-2">
+        <span>通話データを読み込んでいます...</span>
+      </div>
+    </div>
+    <div v-else-if="filteredRecords.length === 0" class="text-center py-12 bg-slate-800/30 rounded-2xl border border-slate-800 text-slate-400">
+      該当する通話データが存在しません。
+    </div>
 
-    <!-- レコードカード一覧 -->
-    <div v-else class="records-grid">
-      <div v-for="record in filteredRecords" :key="record.id" class="record-card">
-        <!-- カードヘッダー -->
-        <div class="card-header">
-          <div class="meta-info">
-            <span class="sales-code">担当: {{ record.sales_code }}</span>
-            <span class="phone">📞 {{ record.customer_phone }}</span>
-            <span class="duration">⏱ {{ record.call_duration }}秒</span>
+    <div v-else class="flex flex-col gap-5">
+      <div 
+        v-for="record in filteredRecords" 
+        :key="record.id" 
+        class="bg-slate-800/80 backdrop-blur-sm border border-slate-700/60 rounded-2xl p-5 shadow-xl transition-all"
+      >
+        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 pb-4 border-b border-slate-700/50">
+          <div class="flex flex-wrap items-center gap-4 text-sm">
+            <span class="font-mono bg-slate-900/80 px-2.5 py-1 rounded-md text-slate-300 border border-slate-700">ID: {{ record.id }}</span>
+            <span class="text-slate-300 font-medium">担当: {{ record.sales_code }}</span>
+            <span class="text-slate-400">📞 {{ record.customer_phone }}</span>
+            <span class="text-slate-400">⏱ {{ record.call_duration }}秒</span>
           </div>
 
-          <!-- ランクバッジ -->
-          <div v-if="record.analysis" :class="['rank-badge', getRankBadgeClass(record.analysis.rank)]">
+          <div v-if="record.analysis" :class="['px-3 py-1 rounded-lg text-xs font-bold shadow-sm', getRankBadgeClass(record.analysis.rank)]">
             ランク {{ record.analysis.rank }}
           </div>
-          <div v-else class="rank-badge badge-none">未分析</div>
-        </div>
-
-        <!-- 購買確率バー -->
-        <div v-if="record.analysis" class="probability-section">
-          <div class="prob-header">
-            <span>成約可能性 (購入率)</span>
-            <strong>{{ record.analysis.purchase_probability }}%</strong>
-          </div>
-          <div class="prob-bar-bg">
-            <div class="prob-bar-fill" :style="{ width: record.analysis.purchase_probability + '%' }"></div>
+          <div v-else class="px-3 py-1 rounded-lg text-xs font-medium bg-slate-700 text-slate-400">
+            未分析
           </div>
         </div>
 
-        <!-- アクションボタン群 -->
-        <div class="card-actions">
+        <div v-if="record.analysis" class="my-4">
+          <div class="flex justify-between text-xs font-medium text-slate-400 mb-1.5">
+            <span>成約可能性 (購入確率)</span>
+            <span class="text-sky-400 font-bold text-sm">{{ record.analysis.purchase_probability }}%</span>
+          </div>
+          <div class="h-2 w-full bg-slate-900 rounded-full overflow-hidden p-0.5 border border-slate-700/50">
+            <div 
+              class="h-full bg-gradient-to-r from-sky-500 to-emerald-400 rounded-full transition-all duration-500" 
+              :style="{ width: record.analysis.purchase_probability + '%' }"
+            ></div>
+          </div>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2 mt-4 pt-2">
           <button 
             @click="handleTranscribe(record.id)" 
-            class="btn btn-secondary"
+            class="px-3.5 py-2 bg-slate-700 hover:bg-slate-600 text-slate-100 rounded-xl text-xs font-semibold transition-all cursor-pointer disabled:opacity-50"
             :disabled="actionLoading[`${record.id}_transcribe`]"
           >
-            {{ actionLoading[`${record.id}_transcribe`] ? '文字起こし中...' : 'STT文字起こし' }}
+            {{ actionLoading[`${record.id}_transcribe`] ? '⏳ 文字起こし中...' : '🎙️ STT文字起こし' }}
           </button>
 
           <button 
             @click="handleAnalyze(record.id)" 
-            class="btn btn-primary"
+            class="px-3.5 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-xs font-semibold shadow-md shadow-sky-600/20 transition-all cursor-pointer disabled:opacity-50"
             :disabled="actionLoading[`${record.id}_analyze`]"
           >
-            {{ actionLoading[`${record.id}_analyze`] ? '分析中...' : 'AIスコアリング' }}
+            {{ actionLoading[`${record.id}_analyze`] ? '⚡ 分析中...' : '🤖 AIスコアリング' }}
           </button>
 
-          <button @click="handleExportCsv(record.id)" class="btn btn-outline">
+          <button 
+            @click="handleExportCsv(record.id)" 
+            class="px-3.5 py-2 bg-slate-900/60 hover:bg-slate-900 text-slate-300 border border-slate-700 hover:border-slate-600 rounded-xl text-xs font-semibold transition-all cursor-pointer"
+          >
             📥 CSV出力
           </button>
 
           <button 
             @click="activeRecordId = activeRecordId === record.id ? null : record.id"
-            class="btn btn-link"
+            class="ml-auto px-3 py-1.5 text-sky-400 hover:text-sky-300 text-xs font-semibold transition-colors cursor-pointer"
           >
             {{ activeRecordId === record.id ? '閉じる ▲' : '詳細・対話ログ ▼' }}
           </button>
         </div>
 
-        <!-- アコーディオン詳細表示 -->
-        <div v-if="activeRecordId === record.id" class="card-details">
-          <!-- AI分析結果カード -->
-          <div v-if="record.analysis" class="analysis-box">
-            <h4>💡 AI分析サマリー</h4>
-            <p><strong>顧客の関心点・要約:</strong> {{ record.analysis.customer_interest }}</p>
-            <p><strong>懸念点・反論:</strong> {{ record.analysis.concerns }}</p>
-            <p><strong>推奨アクション:</strong> {{ record.analysis.recommended_action }}</p>
+        <div v-if="activeRecordId === record.id" class="mt-5 pt-5 border-t border-slate-700/50 flex flex-col gap-4">
+          <div v-if="record.analysis" class="bg-slate-900/90 p-4 rounded-xl border-l-4 border-sky-400 text-xs leading-relaxed space-y-2">
+            <h4 class="font-bold text-sky-400 text-sm mb-2">💡 AI分析サマリー</h4>
+            <p><span class="font-semibold text-slate-300">顧客の関心点:</span> <span class="text-slate-300">{{ record.analysis.customer_interest }}</span></p>
+            <p><span class="font-semibold text-slate-300">懸念点・課題:</span> <span class="text-slate-300">{{ record.analysis.concerns }}</span></p>
+            <p><span class="font-semibold text-slate-300">推奨アクション:</span> <span class="text-slate-300">{{ record.analysis.recommended_action }}</span></p>
           </div>
 
-          <!-- 話者識別タイムライン対話ログ -->
-          <div class="transcripts-box">
-            <h4>💬 対話ログ (話者識別: 営業 vs 顧客)</h4>
-            <div v-if="record.transcripts.length === 0" class="no-transcripts">
+          <div class="space-y-3">
+            <h4 class="text-xs font-semibold text-slate-400 uppercase tracking-wider">💬 対話ログ (話者識別: 営業 vs 顧客)</h4>
+            <div v-if="record.transcripts.length === 0" class="text-xs text-slate-500 italic py-2">
               文字起こしデータがありません。「STT文字起こし」を実行してください。
             </div>
-            <div v-else class="chat-timeline">
+            <div v-else class="flex flex-col gap-2.5 max-h-96 overflow-y-auto pr-1">
               <div 
                 v-for="t in record.transcripts" 
                 :key="t.id" 
-                :class="['chat-bubble', t.speaker === 'Sales' ? 'chat-sales' : 'chat-customer']"
+                :class="[
+                  'p-3 rounded-xl max-w-[85%] text-xs border leading-relaxed',
+                  t.speaker === 'Sales' 
+                    ? 'self-start bg-sky-950/40 border-sky-800/50 text-sky-100' 
+                    : 'self-end bg-emerald-950/40 border-emerald-800/50 text-emerald-100'
+                ]"
               >
-                <div class="bubble-header">
-                  <span class="speaker-tag">{{ t.speaker === 'Sales' ? '営業担当者' : '顧客' }}</span>
-                  <span class="timestamp">{{ t.start_time.toFixed(1) }}s - {{ t.end_time.toFixed(1) }}s</span>
+                <div class="flex justify-between items-center text-[10px] text-slate-400 mb-1 gap-4">
+                  <span class="font-bold text-slate-200">{{ t.speaker === 'Sales' ? '👔 営業担当者' : '👤 顧客' }}</span>
+                  <span class="font-mono text-slate-500">{{ t.start_time.toFixed(1) }}s - {{ t.end_time.toFixed(1) }}s</span>
                 </div>
-                <div class="bubble-text">{{ t.text }}</div>
+                <div>{{ t.text }}</div>
               </div>
             </div>
           </div>
@@ -203,64 +221,3 @@ onMounted(() => {
     </div>
   </div>
 </template>
-
-<style scoped>
-.dashboard-container { max-width: 1000px; margin: 0 auto; color: #f8fafc; }
-.dash-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
-.subtitle { color: #94a3b8; font-size: 0.85rem; }
-.btn-refresh { background: #334155; border: 1px solid #475569; color: white; padding: 0.5rem 1rem; border-radius: 6px; cursor: pointer; }
-
-/* フィルタータブ */
-.filter-bar { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1.5rem; background: rgba(255,255,255,0.03); padding: 0.6rem 1rem; border-radius: 8px; flex-wrap: wrap; }
-.filter-label { font-size: 0.85rem; color: #cbd5e1; margin-right: 0.5rem; }
-.filter-btn { background: transparent; border: 1px solid #475569; color: #94a3b8; padding: 0.35rem 0.8rem; border-radius: 20px; cursor: pointer; font-size: 0.8rem; }
-.filter-btn.active { background: #38bdf8; color: #0f172a; border-color: #38bdf8; font-weight: bold; }
-
-/* レコードカード */
-.records-grid { display: flex; flex-direction: column; gap: 1.2rem; }
-.record-card { background: rgba(30, 41, 59, 0.7); border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; padding: 1.2rem; }
-.card-header { display: flex; justify-content: space-between; align-items: center; }
-.meta-info { display: flex; gap: 1.2rem; font-size: 0.9rem; color: #e2e8f0; }
-
-/* ランクバッジ */
-.rank-badge { font-weight: bold; padding: 0.25rem 0.75rem; border-radius: 6px; font-size: 0.85rem; }
-.badge-s { background: #8b5cf6; color: white; }
-.badge-a { background: #22c55e; color: white; }
-.badge-b { background: #3b82f6; color: white; }
-.badge-c { background: #eab308; color: #0f172a; }
-.badge-d { background: #f97316; color: white; }
-.badge-e { background: #ef4444; color: white; }
-.badge-none { background: #475569; color: #cbd5e1; }
-
-/* 購買確率バー */
-.probability-section { margin: 1rem 0; }
-.prob-header { display: flex; justify-content: space-between; font-size: 0.8rem; color: #cbd5e1; margin-bottom: 0.3rem; }
-.prob-bar-bg { height: 8px; background: rgba(255,255,255,0.1); border-radius: 4px; overflow: hidden; }
-.prob-bar-fill { height: 100%; background: linear-gradient(90deg, #3b82f6, #22c55e); transition: width 0.4s ease; }
-
-/* ボタン類 */
-.card-actions { display: flex; gap: 0.6rem; align-items: center; margin-top: 1rem; flex-wrap: wrap; }
-.btn { padding: 0.45rem 0.9rem; border-radius: 6px; font-size: 0.8rem; font-weight: 600; cursor: pointer; border: none; }
-.btn:disabled { opacity: 0.6; cursor: not-allowed; }
-.btn-primary { background: #3b82f6; color: white; }
-.btn-secondary { background: #475569; color: white; }
-.btn-outline { background: transparent; border: 1px solid #475569; color: #cbd5e1; }
-.btn-link { background: transparent; color: #38bdf8; border: none; font-size: 0.8rem; margin-left: auto; cursor: pointer; }
-
-/* 詳細エリア */
-.card-details { margin-top: 1.2rem; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 1rem; display: flex; flex-direction: column; gap: 1rem; }
-.analysis-box { background: rgba(15, 23, 42, 0.6); padding: 1rem; border-radius: 8px; border-left: 4px solid #38bdf8; font-size: 0.85rem; line-height: 1.6; }
-.analysis-box h4 { margin-bottom: 0.5rem; color: #38bdf8; }
-
-/* チャットタイムライン (話者色分け) */
-.transcripts-box h4 { margin-bottom: 0.5rem; font-size: 0.85rem; color: #cbd5e1; }
-.chat-timeline { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 0.5rem; }
-.chat-bubble { padding: 0.6rem 0.9rem; border-radius: 8px; max-width: 85%; font-size: 0.85rem; }
-.chat-sales { align-self: flex-start; background: rgba(59, 130, 246, 0.2); border: 1px solid rgba(59, 130, 246, 0.4); }
-.chat-customer { align-self: flex-end; background: rgba(34, 197, 94, 0.2); border: 1px solid rgba(34, 197, 94, 0.4); }
-.bubble-header { display: flex; justify-content: space-between; font-size: 0.75rem; color: #94a3b8; margin-bottom: 0.2rem; gap: 1rem; }
-.speaker-tag { font-weight: bold; color: #e2e8f0; }
-.state-box { text-align: center; padding: 2rem; background: rgba(255,255,255,0.02); border-radius: 8px; color: #94a3b8; }
-.no-transcripts { font-size: 0.85rem; color: #94a3b8; font-style: italic; }
-</style>
-

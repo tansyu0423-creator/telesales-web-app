@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     minio_secure: bool = False
 
     groq_api_key: str = ""
+    gemini_api_key: str = ""
 
     # .env ファイルから設定を読み込む（開発環境・テスト環境のパスに対応）
     model_config = SettingsConfigDict(

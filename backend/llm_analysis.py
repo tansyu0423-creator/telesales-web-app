@@ -1,13 +1,21 @@
 import json
 from typing import List, Dict, Any
 from groq import Groq
+from google import genai
+from google.genai import types
+
 try:
     from .config import settings
+    from . import schemas
 except ImportError:
     from config import settings
+    import schemas
 
 client = Groq(api_key=settings.groq_api_key)
 MODEL_NAME = "llama-3.3-70b-versatile"
+
+gemini_client = genai.Client(api_key=settings.gemini_api_key) if settings.gemini_api_key else None
+groq_client = client
 
 def calculate_overlap(start1: float, end1: float, start2: float, end2: float) -> float:
     """2つのタイムセグメントの重なり時間（秒）を計算"""
@@ -198,3 +206,102 @@ JSON形式で、各セリフのID（文字列の数字）をキー、判定結�
             for idx, s in enumerate(merged_segments)
         ]
         return merge_consecutive_speakers(fallback_segments)
+
+
+def analyze_and_score_call(record_id: int, transcripts: List[Dict[str, Any]]) -> schemas.AnalysisResultCreate:
+    """
+    通話ログを分析し、指定されたPydanticスキーマに沿ってランクや成約確率を算出する。
+    GeminiのStructured Outputを利用して型を強制する。
+    """
+    if not transcripts:
+        return schemas.AnalysisResultCreate(
+            call_record_id=record_id,
+            rank="C",
+            purchase_probability=0,
+            customer_interest="対話データなし",
+            concerns="対話データなし",
+            recommended_action="データがないため評価不能です。"
+        )
+
+    dialogue_text = "\n".join([f"{s.get('speaker', 'Unknown')}: {s.get('text', '')}" for s in transcripts])
+
+    prompt = f"""
+    あなたはプロのインサイドセールス分析AIです。以下の電話営業の対話ログを分析し、
+    顧客の反応から成約見込みをスコアリングしてください。
+
+    【ランクと成約確率の連動ルール（厳守）】
+    出力する `rank` と `purchase_probability` は、必ず以下の対応表と完全に一致させてください。矛盾する出力は絶対に許可されません。
+    - purchase_probability が 90〜100 の場合: 必ず rank は "S"
+    - purchase_probability が 70〜89 の場合: 必ず rank は "A"
+    - purchase_probability が 50〜69 の場合: 必ず rank は "B"
+    - purchase_probability が 30〜49 の場合: 必ず rank は "C"
+    - purchase_probability が 10〜29 の場合: 必ず rank は "D"
+    - purchase_probability が 0〜9 の場合: 必ず rank は "E"
+
+    【対話ログ】
+    {dialogue_text}
+    """
+
+    if gemini_client:
+        try:
+            print("Gemini API でスコアリングを実行中...")
+            response = gemini_client.models.generate_content(
+                model='gemini-2.0-flash',
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=schemas.AnalysisResultBase, 
+                    temperature=0.1,
+                ),
+            )
+            
+            result_text = response.text or "{}"
+            if result_text.startswith("```json"):
+                result_text = result_text[7:]
+            if result_text.startswith("```"):
+                result_text = result_text[3:]
+            if result_text.endswith("```"):
+                result_text = result_text[:-3]
+                
+            result_dict = json.loads(result_text.strip())
+            return schemas.AnalysisResultCreate(call_record_id=record_id, **result_dict)
+            
+        except Exception as e:
+            print(f"Gemini API Error, Groqにフォールバックします: {e}")
+
+    if groq_client:
+        try:
+            print("Groq API でスコアリングを実行中...")
+            groq_prompt = prompt + "\n\n出力は必ず以下のキーを持つJSONにしてください: {\"rank\": \"S,A,B,C,D,Eのいずれか1文字\", \"purchase_probability\": 0から100の数値, \"customer_interest\": \"文字列\", \"concerns\": \"文字列\", \"recommended_action\": \"文字列\"}"
+            
+            response = groq_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": groq_prompt}],
+                temperature=0.1,
+                response_format={"type": "json_object"}
+            )
+            result_text = response.choices[0].message.content or "{}"
+            result_dict = json.loads(result_text)
+            
+            rank = result_dict.get("rank", "C")
+            prob = result_dict.get("purchase_probability", 50)
+            
+            return schemas.AnalysisResultCreate(
+                call_record_id=record_id,
+                rank=rank[0] if isinstance(rank, str) and rank else "C",
+                purchase_probability=int(prob) if isinstance(prob, (int, float, str)) and str(prob).isdigit() else 50,
+                customer_interest=str(result_dict.get("customer_interest", "特になし")),
+                concerns=str(result_dict.get("concerns", "特になし")),
+                recommended_action=str(result_dict.get("recommended_action", "再コールして状況確認"))
+            )
+        except Exception as e:
+            print(f"Groq API Error: {e}")
+
+    return schemas.AnalysisResultCreate(
+        call_record_id=record_id,
+        rank="C",
+        purchase_probability=0,
+        customer_interest="解析エラー",
+        concerns="解析エラー",
+        recommended_action="AIサービスのエラーのため、手動で確認してください。"
+    )

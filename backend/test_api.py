@@ -96,3 +96,46 @@ async def test_merge_and_role_identification():
     assert len(merged) == 2
     assert merged[0]["temp_speaker"] == "SPEAKER_00"
     assert merged[1]["temp_speaker"] == "SPEAKER_01"
+
+@pytest.mark.asyncio
+async def test_summarize_api_no_transcript():
+    """トランスクリプト（文字起こし）がない状態で要約APIを呼ぶと、正しく400エラーで弾かれるかのテスト"""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        payload = {
+            "sales_code": "SUM_TEST_01",
+            "customer_phone": "090-8888-7777",
+            "call_duration": 120,
+            "audio_file_path": "summary_test.wav"
+        }
+        post_resp = await ac.post("/records/", json=payload)
+        record_id = post_resp.json()["id"]
+
+        sum_resp = await ac.post(f"/records/{record_id}/summarize")
+        
+        assert sum_resp.status_code == 400
+        assert "文字起こしデータが存在しません" in sum_resp.json()["detail"]
+
+
+@patch("summary_analysis.gemini_client")
+def test_summarize_call_module(mock_gemini):
+    """AI要約モジュール (summary_analysis) が正しくデータをパース（解析）するかの単体テスト"""
+    from summary_analysis import summarize_call
+    
+    empty_result = summarize_call([])
+    assert "トランスクリプトがありません" in empty_result["summary"]
+    
+    class MockResponse:
+        text = '{"summary": "モックされた要約テストです", "buying_signals": ["価格に興味あり"], "negative_signals": []}'
+        
+    mock_gemini.models.generate_content.return_value = MockResponse()
+    
+    sample_transcripts = [
+        {"speaker": "Sales", "text": "本日はよろしくお願いいたします。"},
+        {"speaker": "Customer", "text": "よろしくお願いします。"}
+    ]
+    
+    result = summarize_call(sample_transcripts)
+    
+    assert result["summary"] == "モックされた要約テストです"
+    assert "価格に興味あり" in result["buying_signals"]
+    assert len(result["negative_signals"]) == 0

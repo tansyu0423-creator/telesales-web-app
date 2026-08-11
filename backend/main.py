@@ -1,30 +1,26 @@
 import os
 import tempfile
-from fastapi import FastAPI, Depends, HTTPException, File, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.ext.asyncio import AsyncSession
-from typing import List
 import uuid
 import csv
 import io
+from typing import List
+
+from fastapi import FastAPI, Depends, HTTPException, File, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-
-
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select  
 from minio import Minio
 from minio.error import S3Error
-from sqlalchemy import select  
 
 try:
-    from . import models, schemas, crud, stt, llm_analysis, diarization
+    from . import models, schemas, crud, stt, llm_analysis, diarization, summary_analysis
     from .config import settings
     from .database import SessionLocal
 except ImportError:
-    import models, schemas, crud, stt, llm_analysis, diarization
+    import models, schemas, crud, stt, llm_analysis, diarization, summary_analysis
     from config import settings
     from database import SessionLocal
-import csv
-import io
-from fastapi.responses import StreamingResponse
 
 app = FastAPI(title="Telesales Lead Scoring System", version="0.1.0")
 
@@ -273,3 +269,77 @@ async def export_record_csv(record_id: int, db: AsyncSession = Depends(get_db)):
     response.headers["Content-Disposition"] = f"attachment; filename=report_{record_id}.csv"
     
     return response
+
+@app.post("/records/{record_id}/summarize", tags=["Analysis"])
+async def summarize_record(record_id: int, db: AsyncSession = Depends(get_db)):
+    record = await crud.get_call_record(db, record_id=record_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="指定されたレコードが見つかりません")
+
+    stmt = select(models.Transcript).where(
+        models.Transcript.call_record_id == record_id
+    ).order_by(models.Transcript.start_time)
+    res = await db.execute(stmt)
+    transcripts = res.scalars().all()
+    
+    if not transcripts:
+        raise HTTPException(status_code=400, detail="この通話にはまだ文字起こしデータが存在しません")
+
+    transcript_dicts = [
+        {
+            "speaker": t.speaker,
+            "text": t.text
+        }
+        for t in transcripts
+    ]
+
+    try:
+        analysis_result = summary_analysis.summarize_call(transcript_dicts)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI分析中にエラーが発生しました: {str(e)}")
+
+    return {
+        "status": "success",
+        "record_id": record_id,
+        "analysis": analysis_result
+    }
+
+@app.post("/records/{record_id}/score", tags=["Analysis"])
+async def score_record(record_id: int, db: AsyncSession = Depends(get_db)):
+    record = await crud.get_call_record(db, record_id=record_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="指定されたレコードが見つかりません")
+
+    stmt = select(models.Transcript).where(
+        models.Transcript.call_record_id == record_id
+    ).order_by(models.Transcript.start_time)
+    res = await db.execute(stmt)
+    transcripts = res.scalars().all()
+    
+    if not transcripts:
+        raise HTTPException(status_code=400, detail="この通話にはまだ文字起こしデータが存在しません")
+
+    transcript_dicts = [{"speaker": t.speaker, "text": t.text} for t in transcripts]
+
+    try:
+        analysis_data = llm_analysis.analyze_and_score_call(record_id, transcript_dicts)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AIスコアリング中にエラーが発生しました: {str(e)}")
+
+    try:
+        saved_result = await crud.create_or_update_analysis_result(db, analysis_data)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"データベース保存エラー: {str(e)}")
+
+    return {
+        "status": "success",
+        "record_id": record_id,
+        "message": "スコアリングとデータベースへの保存が完了しました",
+        "analysis_result": {
+            "rank": saved_result.rank,
+            "purchase_probability": saved_result.purchase_probability,
+            "customer_interest": saved_result.customer_interest,
+            "concerns": saved_result.concerns,
+            "recommended_action": saved_result.recommended_action
+        }
+    }
