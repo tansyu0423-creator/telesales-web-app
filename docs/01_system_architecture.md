@@ -13,6 +13,7 @@
 | | Tailwind CSS (v3) | レスポンシブ＆ダークモードUIスタイリング |
 | | Axios | REST API クライアント（Base URL一元管理） |
 | **バックエンド** | Python 3.12, FastAPI, Uvicorn | 高速非同期 REST API サーバー |
+| | Celery 5.4, Redis 7 | バックグラウンド非同期タスク処理キュー |
 | | SQLAlchemy 2.0 (AsyncSession), Alembic | ORM / DBマイグレーション管理 |
 | | Pydantic v2 | データバリデーション・Structured Output定義 |
 | **AI / LLM** | Groq Whisper (whisper-large-v3-turbo) | 高精度・超高速日本語音声テキスト化 (STT) |
@@ -21,6 +22,7 @@
 | | Google Gemini API (gemini-2.0-flash) | 通話要約・シグナル抽出・Pydantic Structured Output スコアリング |
 | **インフラ / DB** | PostgreSQL 16 (Docker) | メインリレーショナルデータベース |
 | | MinIO (Docker) | S3互換オブジェクトストレージ (音声ファイル格納) |
+| | Redis 7 (Docker) | Celery用インメモリメッセージブローカー / バックエンド |
 
 ---
 
@@ -34,12 +36,16 @@ flowchart TB
 
     subgraph Backend ["バックエンド API (FastAPI)"]
         API[main.py Router]
+        CRUD[crud.py / Async DB Layer]
+    end
+
+    subgraph TaskQueue ["タスク処理 (Celery + Redis)"]
+        Redis[(Redis Message Broker)]
+        Worker[Celery Worker / tasks.py]
         STT_MOD[stt.py / Groq Whisper]
         DIAR_MOD[diarization.py / Pyannote]
         LLM_ROLE[llm_analysis.py / Role Identifier]
         LLM_SCORE[llm_analysis.py / Gemini Scoring]
-        SUMM_MOD[summary_analysis.py / Gemini Summary]
-        CRUD[crud.py / Async DB Layer]
     end
 
     subgraph External_AI ["外部 AI サービス"]
@@ -55,26 +61,28 @@ flowchart TB
 
     UI <-->|HTTP REST / Axios| API
     API -->|音声保存/再生| MinIO
-    API --> STT_MOD
-    API --> DIAR_MOD
-    API --> SUMM_MOD
-    API --> LLM_SCORE
+    API -->|非同期タスクキュー投函| Redis
+    Redis -->|タスク受信| Worker
+
+    Worker --> STT_MOD
+    Worker --> DIAR_MOD
+    Worker --> LLM_ROLE
+    Worker --> LLM_SCORE
 
     STT_MOD -->|STT API| Groq_API
     DIAR_MOD -->|Pyannote Model| HF_Hub
     LLM_ROLE -->|Llama 3| Groq_API
-    SUMM_MOD -->|Gemini 2.0 Flash| Gemini_API
-    SUMM_MOD -.->|Fallback| Groq_API
     LLM_SCORE -->|Structured Output| Gemini_API
     LLM_SCORE -.->|Fallback| Groq_API
 
     API --> CRUD
+    Worker --> CRUD
     CRUD <-->|Asyncpg| Postgres
 ```
 
 ---
 
-## 4. 通話処理シーケンス図 (処理パイプライン)
+## 4. 通話処理シーケンス図 (非同期処理パイプライン)
 
 ```mermaid
 sequenceDiagram
@@ -82,6 +90,8 @@ sequenceDiagram
     actor User as 営業担当者 / 管理者
     participant FE as Vue 3 フロントエンド
     participant BE as FastAPI バックエンド
+    participant Redis as Redis (Message Broker)
+    participant Worker as Celery Worker (tasks.py)
     participant MinIO as MinIO ストレージ
     participant AI as AIモジュール (Whisper/Pyannote/Gemini)
     participant DB as PostgreSQL DB
@@ -94,22 +104,43 @@ sequenceDiagram
 
     User->>FE: 「STT文字起こし」ボタンクリック
     FE->>BE: POST /records/{id}/transcribe
-    BE->>MinIO: 音声ファイル一時ダウンロード
-    BE->>AI: 1. Whisper STT (テキスト化)
-    BE->>AI: 2. Pyannote (話者分離)
-    BE->>AI: 3. 重なり計算 & Llama3 (Sales / Customer判定)
-    AI-->>BE: 話者付タイムラインテキスト
-    BE->>DB: トランスクリプト保存
-    BE-->>FE: 文字起こし完了通知
+    BE->>Redis: transcribe_and_diarize_task キュー投入
+    BE-->>FE: 即時レスポンス (200 OK + task_id)
+    
+    par バックグラウンド実行
+        Redis->>Worker: タスク取得
+        Worker->>MinIO: 音声ファイルダウンロード
+        Worker->>AI: 1. Whisper STT (テキスト化)
+        Worker->>AI: 2. Pyannote (話者分離)
+        Worker->>AI: 3. 単語位置合わせ ＆ 句読点分割
+        AI-->>Worker: 話者付タイムラインテキスト
+        Worker->>DB: トランスクリプト保存
+    and フロントエンドポーリング
+        loop 2秒間隔でステータス確認
+            FE->>BE: GET /tasks/{task_id}
+            BE-->>FE: ステータス (PENDING / SUCCESS)
+        end
+    end
+    FE->>User: ダッシュボードUI更新 (文字起こし完了表示)
 
     User->>FE: 「AIスコアリング」ボタンクリック
     FE->>BE: POST /records/{id}/score
-    BE->>DB: トランスクリプト取得
-    BE->>AI: Gemini Structured Output スコアリング
-    AI-->>BE: S〜Eランク, 成約確率, 推奨アクション (JSON)
-    BE->>DB: 分析結果保存 / 更新 (Upsert)
-    BE-->>FE: スコアリング結果返却
-    FE->>User: ダッシュボードUI自動更新 (ランクバッジ・プログレスバー表示)
+    BE->>Redis: score_record_task キュー投入
+    BE-->>FE: 即時レスポンス (200 OK + task_id)
+
+    par バックグラウンド実行
+        Redis->>Worker: タスク取得
+        Worker->>DB: トランスクリプト取得
+        Worker->>AI: Gemini / Groq LLM スコアリング
+        AI-->>Worker: S〜Eランク, 成約確率, 推奨アクション (JSON)
+        Worker->>DB: 分析結果保存 / 更新 (Upsert)
+    and フロントエンドポーリング
+        loop 2秒間隔でステータス確認
+            FE->>BE: GET /tasks/{task_id}
+            BE-->>FE: ステータス (PENDING / SUCCESS)
+        end
+    end
+    FE->>User: ダッシュボードUI自動更新 (ランクバッジ・成約確率表示)
 ```
 
 ---

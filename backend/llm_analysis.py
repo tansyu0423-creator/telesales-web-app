@@ -23,39 +23,137 @@ def calculate_overlap(start1: float, end1: float, start2: float, end2: float) ->
     overlap_end = min(end1, end2)
     return max(0.0, overlap_end - overlap_start)
 
-def merge_whisper_and_diarization(
-    whisper_segments: List[Dict[str, Any]], 
-    diarization_segments: List[Dict[str, Any]]
-) -> List[Dict[str, Any]]:
-    merged_result = []
+def merge_whisper_and_diarization(words, diarization_segments):
+    """
+    Groq Whisperの単語とPyannoteの話者分離を高精度に同期させ、
+    短い相槌や境界線の巻き込みを防ぐ最終チューニング版
+    """
+    if not words:
+        return []
 
-    for w_seg in whisper_segments:
-        w_start = float(w_seg.get("start", 0.0))
-        w_end = float(w_seg.get("end", 0.0))
-        text = w_seg.get("text", "").strip()
+    # 1. 単語ごとに、どの話者に属するかをより厳密にマッピング（マージンを狭くして境界の混信を防ぐ）
+    word_items = []
+    for w in words:
+        if isinstance(w, dict):
+            w_text = str(w.get('word', w.get('text', '')))
+            w_start = float(w.get('start', 0.0))
+            w_end = float(w.get('end', 0.0))
+        else:
+            w_text = str(getattr(w, 'word', getattr(w, 'text', '')))
+            w_start = float(getattr(w, 'start', 0.0))
+            w_end = float(getattr(w, 'end', 0.0))
 
-        best_speaker_id = "SPEAKER_00"
-        max_overlap = -1.0
+        word_mid = (w_start + w_end) / 2.0
+        
+        # 厳密な包含関係を優先し、マージンは最小限（±0.1秒）にする
+        matched_speaker = None
+        for seg in diarization_segments:
+            if seg["start"] <= word_mid <= seg["end"]:
+                matched_speaker = str(seg["speaker_id"])
+                break
+        
+        # 完全に収まらない場合の許容マージン（±0.15秒と短めに設定）
+        if matched_speaker is None:
+            for seg in diarization_segments:
+                if seg["start"] - 0.15 <= word_mid <= seg["end"] + 0.15:
+                    matched_speaker = str(seg["speaker_id"])
+                    break
 
-        for d_seg in diarization_segments:
-            d_start = float(d_seg.get("start", 0.0))
-            d_end = float(d_seg.get("end", 0.0))
-            speaker_id = d_seg.get("speaker_id", "SPEAKER_00")
+        # それでも決まらない場合は直前の話者を継承
+        if matched_speaker is None and word_items:
+            matched_speaker = word_items[-1]["speaker"]
+        elif matched_speaker is None:
+            matched_speaker = "UNKNOWN"
 
-            overlap = calculate_overlap(w_start, w_end, d_start, d_end)
-            if overlap > max_overlap:
-                max_overlap = overlap
-                best_speaker_id = speaker_id
-
-        merged_result.append({
+        word_items.append({
+            "word": w_text,
             "start": w_start,
             "end": w_end,
-            "text": text,
-            "temp_speaker": best_speaker_id
+            "speaker": matched_speaker
         })
 
-    return merged_result
+    # 2. 話者が変わるポイントでグループ化（無音の判定も0.6秒と少しタイトにして細かくキレを出す）
+    raw_segments = []
+    if not word_items:
+        return []
 
+    cur_speaker = word_items[0]["speaker"]
+    cur_start = word_items[0]["start"]
+    cur_end = word_items[0]["end"]
+    cur_text = word_items[0]["word"]
+
+    for i in range(1, len(word_items)):
+        item = word_items[i]
+        prev_item = word_items[i-1]
+        
+        speaker_changed = (item["speaker"] != cur_speaker)
+        long_pause = (item["start"] - prev_item["end"] > 0.6)
+        
+        if speaker_changed or long_pause:
+            raw_segments.append({
+                "speaker": cur_speaker,
+                "start": cur_start,
+                "end": cur_end,
+                "text": cur_text.strip()
+            })
+            cur_speaker = item["speaker"]
+            cur_start = item["start"]
+            cur_end = item["end"]
+            cur_text = item["word"]
+        else:
+            cur_text += item["word"]
+            cur_end = item["end"]
+
+    if cur_text.strip():
+        raw_segments.append({
+            "speaker": cur_speaker,
+            "start": cur_start,
+            "end": cur_end,
+            "text": cur_text.strip()
+        })
+
+    # 3. 句読点を基準にした文分割（ターンブレーカー）
+    refined_segments = []
+    for seg in raw_segments:
+        text = seg["text"]
+        start = seg["start"]
+        end = seg["end"]
+        speaker = seg["speaker"]
+
+        if ("。" in text or "？" in text) and len(text) > 25:
+            sentences = [s.strip() for s in text.replace("？", "？\n").replace("。", "。\n").split("\n") if s.strip()]
+            if len(sentences) > 1:
+                total_len = len(text)
+                cur_t = start
+                for s in sentences:
+                    s_duration = (len(s) / total_len) * (end - start)
+                    s_end = cur_t + s_duration
+                    refined_segments.append({
+                        "speaker": speaker,
+                        "start": float(cur_t),
+                        "end": float(s_end),
+                        "text": s
+                    })
+                    cur_t = s_end
+                continue
+
+        refined_segments.append(seg)
+
+    # 4. 同話者の連続を自然に結合（結合間隔を0.5秒以内に絞り、混信を防ぐ）
+    merged_segments = []
+    for seg in refined_segments:
+        if not seg["text"]:
+            continue
+        if merged_segments and merged_segments[-1]["speaker"] == seg["speaker"]:
+            if seg["start"] - merged_segments[-1]["end"] < 0.5:
+                merged_segments[-1]["text"] += " " + str(seg["text"])
+                merged_segments[-1]["end"] = seg["end"]
+            else:
+                merged_segments.append(seg)
+        else:
+            merged_segments.append(seg)
+
+    return merged_segments
 
 def merge_consecutive_speakers(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """

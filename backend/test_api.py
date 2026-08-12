@@ -3,14 +3,38 @@ import sys
 import pytest
 import io
 from httpx import AsyncClient, ASGITransport
-from unittest.mock import patch
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 try:
-    from main import app
+    from main import app, get_db
+    from database import Base
 except ImportError:
-    from backend.main import app
+    from backend.main import app, get_db
+    from backend.database import Base
+
+import pytest_asyncio
+
+TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+test_engine = create_async_engine(TEST_DATABASE_URL, echo=False)
+TestingSessionLocal = async_sessionmaker(autoflush=False, bind=test_engine, expire_on_commit=False)
+
+@pytest_asyncio.fixture(autouse=True, scope="function")
+async def setup_test_db():
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+
+async def override_get_db():
+    async with TestingSessionLocal() as session:
+        yield session
+
+app.dependency_overrides[get_db] = override_get_db
+
 
 @pytest.mark.asyncio
 async def test_health_check():
@@ -52,11 +76,14 @@ async def test_upload_audio():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         fake_wav = io.BytesIO(b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00")
         files = {"file": ("test_call.wav", fake_wav, "audio/wav")}
-        response = await ac.post("/upload/", files=files)
-        assert response.status_code == 200
-        res_data = response.json()
-        assert "saved_filename" in res_data
-        assert res_data["original_filename"] == "test_call.wav"
+        with patch("main.minio_client.bucket_exists", return_value=True), \
+             patch("main.minio_client.make_bucket"), \
+             patch("main.minio_client.put_object"):
+            response = await ac.post("/upload/", files=files)
+            assert response.status_code == 200
+            res_data = response.json()
+            assert "saved_filename" in res_data
+            assert res_data["original_filename"] == "test_call.wav"
 
 @pytest.mark.asyncio
 async def test_analyze_and_export_csv():
@@ -94,8 +121,8 @@ async def test_merge_and_role_identification():
     ]
     merged = merge_whisper_and_diarization(whisper_segs, diarization_segs)
     assert len(merged) == 2
-    assert merged[0]["temp_speaker"] == "SPEAKER_00"
-    assert merged[1]["temp_speaker"] == "SPEAKER_01"
+    assert merged[0].get("speaker", merged[0].get("temp_speaker")) == "SPEAKER_00"
+    assert merged[1].get("speaker", merged[1].get("temp_speaker")) == "SPEAKER_01"
 
 @pytest.mark.asyncio
 async def test_summarize_api_no_transcript():
@@ -139,3 +166,48 @@ def test_summarize_call_module(mock_gemini):
     assert result["summary"] == "モックされた要約テストです"
     assert "価格に興味あり" in result["buying_signals"]
     assert len(result["negative_signals"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_celery_transcribe_async_endpoint():
+    """POST /records/{id}/transcribe が非同期で 202 Accepted と task_id を返却するかのテスト"""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        payload = {
+            "sales_code": "ASYNC_TEST",
+            "customer_phone": "090-1234-9999",
+            "call_duration": 100,
+            "audio_file_path": "async_test.wav"
+        }
+        post_resp = await ac.post("/records/", json=payload)
+        record_id = post_resp.json()["id"]
+
+        class MockTask:
+            id = "mock-task-id-12345"
+
+        with patch("tasks.transcribe_and_diarize_task.delay", return_value=MockTask()):
+            trans_resp = await ac.post(f"/records/{record_id}/transcribe")
+            assert trans_resp.status_code == 202
+            res_data = trans_resp.json()
+            assert res_data["status"] == "processing"
+            assert res_data["task_id"] == "mock-task-id-12345"
+
+
+@pytest.mark.asyncio
+async def test_get_task_status_endpoint():
+    """GET /tasks/{task_id} でCeleryタスクステータスを取得するテスト"""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        class MockAsyncResult:
+            state = "SUCCESS"
+            result = {"status": "success", "record_id": 1}
+            def ready(self):
+                return True
+            def successful(self):
+                return True
+
+        with patch("main.AsyncResult", return_value=MockAsyncResult()):
+            status_resp = await ac.get("/tasks/mock-task-id-12345")
+            assert status_resp.status_code == 200
+            data = status_resp.json()
+            assert data["task_id"] == "mock-task-id-12345"
+            assert data["status"] == "SUCCESS"
+            assert data["result"]["status"] == "success"

@@ -5,20 +5,23 @@ import csv
 import io
 from typing import List
 
-from fastapi import FastAPI, Depends, HTTPException, File, UploadFile
+from fastapi import FastAPI, Depends, HTTPException, File, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select  
 from minio import Minio
 from minio.error import S3Error
+from celery.result import AsyncResult
 
 try:
-    from . import models, schemas, crud, stt, llm_analysis, diarization, summary_analysis
+    from . import models, schemas, crud, stt, llm_analysis, diarization, summary_analysis, tasks
+    from .celery_app import celery_app
     from .config import settings
     from .database import SessionLocal
 except ImportError:
-    import models, schemas, crud, stt, llm_analysis, diarization, summary_analysis
+    import models, schemas, crud, stt, llm_analysis, diarization, summary_analysis, tasks
+    from celery_app import celery_app
     from config import settings
     from database import SessionLocal
 
@@ -131,79 +134,24 @@ def stream_audio(filename: str):
 # ---------------------------------------------
 # Day 5: Whisper STT ＋ Pyannote 話者分離マージ ＋ LLM 役割構造化API
 # ---------------------------------------------
-@app.post("/records/{record_id}/transcribe", tags=["STT & Diarization"])
+@app.post("/records/{record_id}/transcribe", status_code=status.HTTP_202_ACCEPTED, tags=["STT & Diarization"])
 async def transcribe_record(record_id: int, db: AsyncSession = Depends(get_db)):
-    """指定した通話レコードの音声を Whisper STT ＋ Pyannote 話者分離でマージし、LLM役割判定して保存するAPI"""
+    """指定した通話レコードの音声を Whisper STT ＋ Pyannote 話者分離でマージし、LLM役割判定して保存する非同期API"""
     record = await crud.get_call_record(db, record_id=record_id)
     if not record:
         raise HTTPException(status_code=404, detail="Record not found")
 
-    filename = str(record.audio_file_path) 
+    filename = record.audio_file_path
     if not filename:
         raise HTTPException(status_code=400, detail="このレコードには音声ファイルが紐づいていません")
 
-    temp_audio_path = ""
-    try:
-        response = minio_client.get_object(settings.minio_bucket_name, filename)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_audio:
-            for data in response.stream(32*1024):
-                temp_audio.write(data)
-            temp_audio_path = temp_audio.name
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Audio download failed: {str(e)}")
-    finally:
-        if 'response' in locals():
-            response.close()
-            response.release_conn()
-
-    try:
-        # 1. Groq Whisper による文字起こし（時系列テキストセグメント）
-        transcription = stt.transcribe_audio(temp_audio_path)
-        whisper_segments = []
-        for segment in transcription.segments:
-            if isinstance(segment, dict):
-                start = segment.get("start", 0.0)
-                end = segment.get("end", 0.0)
-                text = segment.get("text", "").strip()
-            else:
-                start = getattr(segment, "start", 0.0)
-                end = getattr(segment, "end", 0.0)
-                text = getattr(segment, "text", "").strip()
-            if text:
-                whisper_segments.append({"start": float(start), "end": float(end), "text": text})
-
-        # 2. Pyannote による話者分離セグメント取得 (SPEAKER_00, SPEAKER_01 等)
-        diarization_segments = diarization.diarize_audio(temp_audio_path)
-
-        # 3. タイムスタンプ・オーバーラップ計算によるマージ処理
-        merged_segments = llm_analysis.merge_whisper_and_diarization(whisper_segments, diarization_segments)
-
-        # 4. LLM (Llama 3) による Sales / Customer 役割の同定・構造化
-        final_structured_segments = llm_analysis.identify_roles_by_llm(merged_segments)
-
-        # 5. 既存トランスクリプトをクリアして更新保存
-        record.transcripts.clear()
-
-        for seg in final_structured_segments:
-            transcript_data = models.Transcript(
-                call_record_id=record_id,
-                speaker=seg["speaker"],
-                start_time=seg["start"],
-                end_time=seg["end"],
-                text=seg["text"]
-            )
-            db.add(transcript_data)
-        
-        await db.commit()
-
-    except Exception as e:
-        await db.rollback()
-        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
-    finally:
-        if temp_audio_path and os.path.exists(temp_audio_path):
-            os.remove(temp_audio_path)
-
-    return {"status": "success", "message": "Whisper STT ＋ Pyannote話者分離 ＋ LLM役割構造化が完了しました", "record_id": record_id}
+    task = tasks.transcribe_and_diarize_task.delay(record_id)
+    return {
+        "status": "processing",
+        "task_id": task.id,
+        "message": "Whisper STT ＋ Pyannote話者分離 ＋ LLM役割構造化処理をバックグラウンドで開始しました",
+        "record_id": record_id
+    }
 
 
 
@@ -304,7 +252,7 @@ async def summarize_record(record_id: int, db: AsyncSession = Depends(get_db)):
         "analysis": analysis_result
     }
 
-@app.post("/records/{record_id}/score", tags=["Analysis"])
+@app.post("/records/{record_id}/score", status_code=status.HTTP_202_ACCEPTED, tags=["Analysis"])
 async def score_record(record_id: int, db: AsyncSession = Depends(get_db)):
     record = await crud.get_call_record(db, record_id=record_id)
     if not record:
@@ -319,27 +267,39 @@ async def score_record(record_id: int, db: AsyncSession = Depends(get_db)):
     if not transcripts:
         raise HTTPException(status_code=400, detail="この通話にはまだ文字起こしデータが存在しません")
 
-    transcript_dicts = [{"speaker": t.speaker, "text": t.text} for t in transcripts]
-
-    try:
-        analysis_data = llm_analysis.analyze_and_score_call(record_id, transcript_dicts)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AIスコアリング中にエラーが発生しました: {str(e)}")
-
-    try:
-        saved_result = await crud.create_or_update_analysis_result(db, analysis_data)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"データベース保存エラー: {str(e)}")
-
+    task = tasks.score_record_task.delay(record_id)
     return {
-        "status": "success",
-        "record_id": record_id,
-        "message": "スコアリングとデータベースへの保存が完了しました",
-        "analysis_result": {
-            "rank": saved_result.rank,
-            "purchase_probability": saved_result.purchase_probability,
-            "customer_interest": saved_result.customer_interest,
-            "concerns": saved_result.concerns,
-            "recommended_action": saved_result.recommended_action
-        }
+        "status": "processing",
+        "task_id": task.id,
+        "message": "AIスコアリング処理をバックグラウンドで開始しました",
+        "record_id": record_id
     }
+
+@app.post("/records/{record_id}/pipeline", status_code=status.HTTP_202_ACCEPTED, tags=["Pipeline"])
+async def run_pipeline_record(record_id: int, db: AsyncSession = Depends(get_db)):
+    record = await crud.get_call_record(db, record_id=record_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="指定されたレコードが見つかりません")
+
+    task = tasks.full_pipeline_task.delay(record_id)
+    return {
+        "status": "processing",
+        "task_id": task.id,
+        "message": "文字起こしからAIスコアリングまでの全自動パイプラインをバックグラウンドで開始しました",
+        "record_id": record_id
+    }
+
+@app.get("/tasks/{task_id}", tags=["Task Status"])
+def get_task_status(task_id: str):
+    """Celeryバックグラウンドタスクの実行ステータスを確認するAPI"""
+    task_result = AsyncResult(task_id, app=celery_app)
+    response = {
+        "task_id": task_id,
+        "status": task_result.state,
+    }
+    if task_result.ready():
+        if task_result.successful():
+            response["result"] = task_result.result
+        else:
+            response["error"] = str(task_result.result)
+    return response

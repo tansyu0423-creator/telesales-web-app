@@ -29,13 +29,36 @@ const filteredRecords = computed(() => {
   return records.value.filter(r => r.analysis && r.analysis.rank === selectedRank.value)
 })
 
+const pollTaskStatus = async (taskId) => {
+  return new Promise((resolve, reject) => {
+    const interval = setInterval(async () => {
+      try {
+        const res = await api.get(`/tasks/${taskId}`)
+        if (res.data.status === 'SUCCESS') {
+          clearInterval(interval)
+          resolve(res.data.result)
+        } else if (res.data.status === 'FAILURE') {
+          clearInterval(interval)
+          reject(new Error(res.data.error || 'バックグラウンド処理に失敗しました'))
+        }
+      } catch (err) {
+        clearInterval(interval)
+        reject(err)
+      }
+    }, 2000)
+  })
+}
+
 const handleTranscribe = async (recordId) => {
   actionLoading.value[`${recordId}_transcribe`] = true
   try {
-    await api.post(`/records/${recordId}/transcribe`)
+    const res = await api.post(`/records/${recordId}/transcribe`)
+    if (res.data.task_id) {
+      await pollTaskStatus(res.data.task_id)
+    }
     await fetchRecords()
   } catch (err) {
-    const msg = err.response?.data?.detail || '文字起こしに失敗しました'
+    const msg = err.response?.data?.detail || err.message || '文字起こしに失敗しました'
     alert(msg)
   } finally {
     actionLoading.value[`${recordId}_transcribe`] = false
@@ -45,10 +68,13 @@ const handleTranscribe = async (recordId) => {
 const handleAnalyze = async (recordId) => {
   actionLoading.value[`${recordId}_analyze`] = true
   try {
-    await api.post(`/records/${recordId}/score`)
+    const res = await api.post(`/records/${recordId}/score`)
+    if (res.data.task_id) {
+      await pollTaskStatus(res.data.task_id)
+    }
     await fetchRecords()
   } catch (err) {
-    const msg = err.response?.data?.detail || 'AI分析に失敗しました。先に文字起こしを実行してください。'
+    const msg = err.response?.data?.detail || err.message || 'AI分析に失敗しました。先に文字起こしを実行してください。'
     alert(msg)
   } finally {
     actionLoading.value[`${recordId}_analyze`] = false
@@ -137,6 +163,17 @@ onMounted(() => {
           <div v-else class="px-3 py-1 rounded-lg text-xs font-medium bg-slate-700 text-slate-400">
             未分析
           </div>
+        </div>
+
+        <div v-if="record.audio_file_path" class="mt-3.5 p-3 bg-slate-900/60 rounded-xl border border-slate-700/50 flex flex-col sm:flex-row items-start sm:items-center gap-3">
+          <div class="flex items-center gap-1.5 text-xs font-semibold text-sky-400 shrink-0">
+            <span>🎵 通話音声試聴:</span>
+          </div>
+          <audio 
+            controls 
+            :src="`http://localhost:8000/audio/${record.audio_file_path}`" 
+            class="w-full h-8 rounded-lg outline-none"
+          ></audio>
         </div>
 
         <div v-if="record.analysis" class="my-4">

@@ -16,9 +16,11 @@
 | `POST` | `/records/` | Call Records | 新しい通話レコードメタデータを登録 |
 | `GET` | `/records/` | Call Records | 通話レコード一覧（トランスクリプト・分析結果含む）を取得 |
 | `GET` | `/records/{record_id}` | Call Records | 指定IDの通話レコード詳細を取得 |
-| `POST` | `/records/{record_id}/transcribe` | STT & Diarization | Whisper STT ＋ Pyannote話者分離 ＋ LLM役割同定の実行・保存 |
+| `POST` | `/records/{record_id}/transcribe` | STT & Diarization | Whisper STT ＋ Pyannote話者分離 ＋ LLM役割同定の非同期バックグラウンド実行 |
 | `POST` | `/records/{record_id}/summarize` | Analysis | Gemini 2.0 Flash による通話要約＆シグナル抽出 |
-| `POST` | `/records/{record_id}/score` | Analysis | Gemini Structured Output による S〜Eランクスコアリング＆DB保存 |
+| `POST` | `/records/{record_id}/score` | Analysis | Gemini Structured Output による S〜Eランクスコアリングの非同期バックグラウンド実行 |
+| `POST` | `/records/{record_id}/pipeline` | Pipeline | 全自動解析パイプライン (文字起こし〜スコアリング) の非同期実行 |
+| `GET` | `/tasks/{task_id}` | Task Status | バックグラウンドCeleryタスクのステータス確認 (PENDING/STARTED/SUCCESS/FAILURE) |
 | `GET` | `/records/{record_id}/export/csv` | Export | 通話メタデータ、AIスコア、文字起こしを含む CSV ダウンロード |
 
 ---
@@ -86,16 +88,17 @@
 `POST /records/{record_id}/transcribe`
 
 - **処理概要**:
-  1. MinIO から音声を取得
-  2. Groq Whisper による日本語文字起こしセグメント生成
-  3. Pyannote Audio による話者分離タイムスタンプ取得
-  4. 時間重複計算 ＆ Groq Llama 3.3 70B による 「Sales / Customer」 役割判定
-  5. DB (`transcripts`) へのクリア＆一括保存
+  1. Celery バックグラウンドタスク (`transcribe_and_diarize_task`) に投函し、即座に `task_id` を返却
+  2. Worker が MinIO から音声を取得
+  3. Groq Whisper による日本語文字起こしセグメント生成
+  4. Pyannote Audio による話者分離タイムスタンプ取得
+  5. 時間・文字位置合わせ ＆ 句読点文分割
+  6. DB (`transcripts`) へのクリア＆一括保存
 - **レスポンス (200 OK)**:
   ```json
   {
-    "status": "success",
-    "message": "Whisper STT ＋ Pyannote話者分離 ＋ LLM役割構造化が完了しました",
+    "message": "文字起こしタスクを開始しました",
+    "task_id": "f9ae5af7-f55a-4392-a6b4-701a75a32561",
     "record_id": 1
   }
   ```
@@ -131,26 +134,47 @@
 `POST /records/{record_id}/score`
 
 - **処理概要**:
-  - トランスクリプトを取得し、Gemini 2.0 Flash の Native Structured Output（Pydantic スキーマ受容）で S〜E ランクおよび成約確率を算出。DB (`analysis_results`) に Upsert 保存。
+  - Celery バックグラウンドタスク (`score_record_task`) に投函し、即座に `task_id` を返却
+  - Worker が DB からトランスクリプトを取得し、Gemini 2.0 Flash / Groq LLM の Structured Output で S〜E ランクおよび成約確率を算出。DB (`analysis_results`) に Upsert 保存。
 - **レスポンス (200 OK)**:
   ```json
   {
-    "status": "success",
-    "record_id": 1,
-    "message": "スコアリングとデータベースへの保存が完了しました",
-    "analysis_result": {
-      "rank": "A",
-      "purchase_probability": 85,
-      "customer_interest": "業務自動化によるコスト削減効果",
-      "concerns": "既存システムからのデータ移行期間",
-      "recommended_action": "データ移行手順書を添付したお礼メールを送付し、次週デモ日程を確定する"
+    "message": "AIスコアリングタスクを開始しました",
+    "task_id": "8d672bdd-93a0-42d8-860c-18dda149fe2a",
+    "record_id": 1
+  }
+  ```
+
+---
+
+### 3.8. Celery タスクステータス確認 API
+`GET /tasks/{task_id}`
+
+- **処理概要**:
+  - バックグラウンドで実行中の Celery タスクの進捗状況 (PENDING / STARTED / SUCCESS / FAILURE) を取得
+- **レスポンス (200 OK - 処理中)**:
+  ```json
+  {
+    "task_id": "f9ae5af7-f55a-4392-a6b4-701a75a32561",
+    "status": "PENDING"
+  }
+  ```
+- **レスポンス (200 OK - 処理完了)**:
+  ```json
+  {
+    "task_id": "f9ae5af7-f55a-4392-a6b4-701a75a32561",
+    "status": "SUCCESS",
+    "result": {
+      "status": "success",
+      "record_id": 1,
+      "transcript_count": 20
     }
   }
   ```
 
 ---
 
-### 3.8. 通話分析レポート CSV エクスポート API
+### 3.9. 通話分析レポート CSV エクスポート API
 `GET /records/{record_id}/export/csv`
 
 - **レスポンス (200 OK)**:

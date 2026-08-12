@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     gemini_api_key: str = ""
 
+    celery_broker_url: str = "redis://localhost:6379/0"
+    celery_result_backend: str = "redis://localhost:6379/1"
+
     # .env ファイルから設定を読み込む（開発環境・テスト環境のパスに対応）
     model_config = SettingsConfigDict(
         env_file=(os.path.join(BASE_DIR, ".env"), ".env"),
