@@ -5,7 +5,7 @@ import csv
 import io
 from typing import List
 
-from fastapi import FastAPI, Depends, HTTPException, File, UploadFile, status
+from fastapi import FastAPI, Depends, HTTPException, File, UploadFile, status, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -303,3 +303,70 @@ def get_task_status(task_id: str):
         else:
             response["error"] = str(task_result.result)
     return response
+
+# ---------------------------------------------
+# Day 9用: 音声アップロード ＋ レコード作成を一括で行うAPI
+# ---------------------------------------------
+@app.post("/records/upload-and-transcribe", response_model=schemas.CallRecord, tags=["Call Records"])
+async def upload_and_transcribe_record(
+    file: UploadFile = File(...),
+    sales_rep_code: str = Form(...),
+    customer_phone: str = Form(...),
+    duration: int = Form(...),
+    db: AsyncSession = Depends(get_db)
+):
+    """音声ファイルをMinIOにアップロードし、通話レコードを作成した上でAI解析タスクを発火させるAPI"""
+    if not file.filename or not file.filename.lower().endswith(('.wav', '.mp3')):
+        raise HTTPException(status_code=400, detail="許可されているのは .wav または .mp3 のみです")
+
+    file_extension = file.filename.split('.')[-1]
+    unique_filename = f"{uuid.uuid4()}.{file_extension}"
+
+    try:
+        ensure_bucket_exists(settings.minio_bucket_name)
+        file.file.seek(0, 2)
+        file_size = file.file.tell()
+        file.file.seek(0)
+        content_type = file.content_type or ("audio/mpeg" if file_extension.lower() == "mp3" else "audio/wav")
+
+        # 1. MinIOへアップロード
+        minio_client.put_object(
+            bucket_name=settings.minio_bucket_name,
+            object_name=unique_filename,
+            data=file.file,
+            length=file_size,
+            content_type=content_type
+        )
+
+        # 2. データベースにCallRecordを作成
+        record_in = schemas.CallRecordCreate(
+            sales_code=sales_rep_code,
+            customer_phone=customer_phone,
+            call_duration=duration,
+            audio_file_path=unique_filename
+        )
+        db_record = await crud.create_call_record(db=db, record=record_in)
+
+        # 3. Day 8/9のフル自動パイプライン（または文字起こしタスク）をバックグラウンドで自動発火！
+        task = tasks.full_pipeline_task.delay(db_record.id)
+
+        # フロントエンドの store.setTaskState('processing', data.task_id) が受け取れるように返す
+        # ※レスポンスに task_id を含めるのがポイントです
+        # （response_modelが CallRecord のため、もし task_id も返したい場合は辞書を返すかスキーマを調整します）
+        
+        # FastAPIのresponse_modelに合わせて辞書を返すための工夫
+        # 返り値に task_id を持たせるためのカスタムレスポンス
+        return {
+            "id": db_record.id,
+            "sales_code": db_record.sales_code,
+            "customer_phone": db_record.customer_phone,
+            "call_duration": db_record.call_duration,
+            "audio_file_path": db_record.audio_file_path,
+            "created_at": db_record.created_at,
+            "task_id": task.id
+        }
+
+    except S3Error as e:
+        raise HTTPException(status_code=500, detail=f"ストレージエラー: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"サーバーエラー: {str(e)}")

@@ -2,6 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
+
 body {
-  @apply bg-slate-900 text-slate-100 min-h-screen antialiased;
+  @apply bg-gray-50 text-gray-900;
 }

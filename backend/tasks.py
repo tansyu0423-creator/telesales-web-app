@@ -46,19 +46,20 @@ def transcribe_and_diarize_task(self, record_id: int) -> Dict[str, Any]:
             raw_audio_path = ""
             wav_audio_path = ""
             
+            # 1. MinIOから元ファイルのままダウンロード
+            ext = os.path.splitext(filename)[1]
+            if not ext:
+                ext = ".mp3"
+            
+            response = None
             try:
-                # 1. MinIOから元ファイルのままダウンロード
-                ext = os.path.splitext(filename)[1]
-                if not ext:
-                    ext = ".mp3"
-                
                 response = minio_client.get_object(settings.minio_bucket_name, filename)
                 with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as temp_audio:
                     for data in response.stream(32 * 1024):
                         temp_audio.write(data)
                     raw_audio_path = temp_audio.name
             finally:
-                if 'response' in locals():
+                if response is not None:
                     response.close()
                     response.release_conn()
 
@@ -160,8 +161,8 @@ def score_record_task(self, record_id: int) -> Dict[str, Any]:
 
 @celery_app.task(bind=True, name="backend.tasks.full_pipeline_task")
 def full_pipeline_task(self, record_id: int) -> Dict[str, Any]:
-    t_res = transcribe_and_diarize_task(record_id)
-    s_res = score_record_task(record_id)
+    t_res = transcribe_and_diarize_task.apply(args=(record_id,)).get()
+    s_res = score_record_task.apply(args=(record_id,)).get()
     return {
         "status": "success",
         "record_id": record_id,

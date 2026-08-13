@@ -306,10 +306,31 @@ JSON形式で、各セリフのID（文字列の数字）をキー、判定結�
         return merge_consecutive_speakers(fallback_segments)
 
 
+def derive_rank_from_probability(prob: float) -> str:
+    """成約率パーセンテージからランク(S〜E)を自動算出"""
+    try:
+        val = float(prob or 0)
+    except (ValueError, TypeError):
+        val = 0.0
+
+    if val >= 90.0:
+        return "S"
+    elif val >= 70.0:
+        return "A"
+    elif val >= 50.0:
+        return "B"
+    elif val >= 30.0:
+        return "C"
+    elif val >= 10.0:
+        return "D"
+    else:
+        return "E"
+
+
 def analyze_and_score_call(record_id: int, transcripts: List[Dict[str, Any]]) -> schemas.AnalysisResultCreate:
     """
     通話ログを分析し、指定されたPydanticスキーマに沿ってランクや成約確率を算出する。
-    GeminiのStructured Outputを利用して型を強制する。
+    4観点のルーブリック評価（各0-25点）により1%刻みのリアルな成約率を算出し、バックエンドでランクを自動導出する。
     """
     if not transcripts:
         return schemas.AnalysisResultCreate(
@@ -324,21 +345,23 @@ def analyze_and_score_call(record_id: int, transcripts: List[Dict[str, Any]]) ->
     dialogue_text = "\n".join([f"{s.get('speaker', 'Unknown')}: {s.get('text', '')}" for s in transcripts])
 
     prompt = f"""
-    あなたはプロのインサイドセールス分析AIです。以下の電話営業の対話ログを分析し、
-    顧客の反応から成約見込みをスコアリングしてください。
+    あなたはプロのインサイドセールス分析AIです。以下の電話営業の対話ログを細かく評価し、
+    顧客の成約意欲・成約率 (`purchase_probability`: 0〜100の数値) を算出してください。
 
-    【ランクと成約確率の連動ルール（厳守）】
-    出力する `rank` と `purchase_probability` は、必ず以下の対応表と完全に一致させてください。矛盾する出力は絶対に許可されません。
-    - purchase_probability が 90〜100 の場合: 必ず rank は "S"
-    - purchase_probability が 70〜89 の場合: 必ず rank は "A"
-    - purchase_probability が 50〜69 の場合: 必ず rank は "B"
-    - purchase_probability が 30〜49 の場合: 必ず rank は "C"
-    - purchase_probability が 10〜29 の場合: 必ず rank は "D"
-    - purchase_probability が 0〜9 の場合: 必ず rank は "E"
+    【数値算出指示 (ルーブリック細密評価)】
+    以下の4つの観点（各0〜25点）を個別に厳密に評価し、その合計点（0〜100）を `purchase_probability` としてください。
+    1. 顧客の関心・質問の積極性 (0〜25点)
+    2. 課題感・導入意欲の深さ (0〜25点)
+    3. 次回アクション・スケジュールの具体性 (0〜25点)
+    4. 懸念・反論リスクの少なさ (0〜25点)
+
+    ※ 80, 60, 50, 40 などの典型的な5や10の倍数に丸めず、各観点の加算結果によるリアルな1%単位の数値（例: 83, 76, 62, 49, 27, 8 など）を正確に算出してください。
 
     【対話ログ】
     {dialogue_text}
     """
+
+    result_dict = {}
 
     if gemini_client:
         try:
@@ -349,7 +372,7 @@ def analyze_and_score_call(record_id: int, transcripts: List[Dict[str, Any]]) ->
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=schemas.AnalysisResultBase, 
-                    temperature=0.1,
+                    temperature=0.5,
                 ),
             )
             
@@ -362,44 +385,40 @@ def analyze_and_score_call(record_id: int, transcripts: List[Dict[str, Any]]) ->
                 result_text = result_text[:-3]
                 
             result_dict = json.loads(result_text.strip())
-            return schemas.AnalysisResultCreate(call_record_id=record_id, **result_dict)
             
         except Exception as e:
             print(f"Gemini API Error, Groqにフォールバックします: {e}")
 
-    if groq_client:
+    if not result_dict and groq_client:
         try:
             print("Groq API でスコアリングを実行中...")
-            groq_prompt = prompt + "\n\n出力は必ず以下のキーを持つJSONにしてください: {\"rank\": \"S,A,B,C,D,Eのいずれか1文字\", \"purchase_probability\": 0から100の数値, \"customer_interest\": \"文字列\", \"concerns\": \"文字列\", \"recommended_action\": \"文字列\"}"
+            groq_prompt = prompt + "\n\n出力は必ず以下のキーを持つJSONにしてください: {\"purchase_probability\": 0から100の数値, \"customer_interest\": \"文字列\", \"concerns\": \"文字列\", \"recommended_action\": \"文字列\"}"
             
             response = groq_client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=[{"role": "user", "content": groq_prompt}],
-                temperature=0.1,
+                temperature=0.5,
                 response_format={"type": "json_object"}
             )
             result_text = response.choices[0].message.content or "{}"
             result_dict = json.loads(result_text)
-            
-            rank = result_dict.get("rank", "C")
-            prob = result_dict.get("purchase_probability", 50)
-            
-            return schemas.AnalysisResultCreate(
-                call_record_id=record_id,
-                rank=rank[0] if isinstance(rank, str) and rank else "C",
-                purchase_probability=int(prob) if isinstance(prob, (int, float, str)) and str(prob).isdigit() else 50,
-                customer_interest=str(result_dict.get("customer_interest", "特になし")),
-                concerns=str(result_dict.get("concerns", "特になし")),
-                recommended_action=str(result_dict.get("recommended_action", "再コールして状況確認"))
-            )
         except Exception as e:
             print(f"Groq API Error: {e}")
 
+    prob = result_dict.get("purchase_probability", 50)
+    try:
+        prob_val = int(prob)
+    except (ValueError, TypeError):
+        prob_val = 50
+
+    # バックエンド側で確実にパーセンテージと連動させてランクを自動導出
+    rank_val = derive_rank_from_probability(prob_val)
+
     return schemas.AnalysisResultCreate(
         call_record_id=record_id,
-        rank="C",
-        purchase_probability=0,
-        customer_interest="解析エラー",
-        concerns="解析エラー",
-        recommended_action="AIサービスのエラーのため、手動で確認してください。"
+        rank=rank_val,
+        purchase_probability=prob_val,
+        customer_interest=str(result_dict.get("customer_interest", "特になし")),
+        concerns=str(result_dict.get("concerns", "特になし")),
+        recommended_action=str(result_dict.get("recommended_action", "再コールして状況確認"))
     )

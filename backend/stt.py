@@ -6,7 +6,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+groq_api_key = os.getenv("GROQ_API_KEY")
+client = Groq(api_key=groq_api_key) if groq_api_key else None
+
 
 def transcribe_audio(file_path: str):
     """
@@ -15,6 +17,9 @@ def transcribe_audio(file_path: str):
     """
     CHUNK_LENGTH_SEC = 600  # 10分 (16kHz WAVなら約19MBで安全圏)
     
+    if not client:
+        raise RuntimeError("GROQ_API_KEY is not set.")
+
     with wave.open(file_path, 'rb') as wf:
         framerate = wf.getframerate()
         n_channels = wf.getnchannels()

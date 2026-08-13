@@ -1,7 +1,7 @@
 # 🚀 テレセールス・アナリティクス・ダッシュボード システム仕様書
 
 ## 1. システム概要
-本システム（テレセールス見込み顧客スコアリングシステム）は、アウトバウンド型電話営業（テレセールス）における通話音声を自動でテキスト化・話者識別し、最先端の生成AI（Gemini 2.0 Flash / Llama 3.3 70B）を用いて成約見込み度の判定（S〜Eランクスコアリング）、要約、シグナル抽出を行う高度AIインサイドセールス支援プラットフォームです。
+本システム（テレセールス見込み顧客スコアリングシステム）は、アウトバウンド型電話営業（テレセールス）における通話音声を自動でテキスト化・話者識別し、最先端の生成AI（Gemini 2.0 Flash / Llama 3.3 70B）を用いて成約率の判定（S〜Eランクスコアリング）、要約、シグナル抽出を行う高度AIインサイドセールス支援プラットフォームです。
 
 ---
 
@@ -11,7 +11,10 @@
 | :--- | :--- | :--- |
 | **フロントエンド** | Vue 3 (Composition API), Vite | ダッシュボード画面構築・SPA |
 | | Tailwind CSS (v3) | レスポンシブ＆ダークモードUIスタイリング |
+| | Pinia | アップロード状態管理・ストア |
+| | Vue Router 4 | ルーティング制御（`/`, `/upload`, `/records/:id`） |
 | | Axios | REST API クライアント（Base URL一元管理） |
+| | Lucide Vue Next | モダンアイコンセット |
 | **バックエンド** | Python 3.12, FastAPI, Uvicorn | 高速非同期 REST API サーバー |
 | | Celery 5.4, Redis 7 | バックグラウンド非同期タスク処理キュー |
 | | SQLAlchemy 2.0 (AsyncSession), Alembic | ORM / DBマイグレーション管理 |
@@ -26,12 +29,51 @@
 
 ---
 
-## 3. 全体アーキテクチャ構成図
+## 3. 分類ランク表記標準（Wording & Labeling Specifications）
+
+本システムでは、顧客の反応およびAIスコアリング結果に基づき、以下の分類ランク基準を厳格に適用します。
+
+| ランク | 正式名称 (パラメータ) | 成約率 (％) 基準 | UI表示ルール |
+| :---: | :--- | :---: | :--- |
+| **S** | **非常に有望** | 90% 〜 100% | 絞り込み: `[S：非常に有望]` ｜ カード右上: `S` ｜ パラメータ: `非常に有望` |
+| **A** | **有望** | 70% 〜 89% | 絞り込み: `[A：有望]` ｜ カード右上: `A` ｜ パラメータ: `有望` |
+| **B** | **検討中** | 50% 〜 69% | 絞り込み: `[B：検討中]` ｜ カード右上: `B` ｜ パラメータ: `検討中` |
+| **C** | **観察** | 30% 〜 49% | 絞り込み: `[C：観察]` ｜ カード右上: `C` ｜ パラメータ: `観察` |
+| **D** | **低可能性** | 10% 〜 29% | 絞り込み: `[D：低可能性]` ｜ カード右上: `D` ｜ パラメータ: `低可能性` |
+| **E** | **不可行** | 0% 〜 9% | 絞り込み: `[E：不可行]` ｜ カード右上: `E` ｜ パラメータ: `不可行` |
+
+- **表記統一ルール**:
+  - `成約可能性（購入確率）` ➔ 必ず **`成約率`** と表記。
+  - `文字起こし` ➔ **`AI解析`** または **`対話ログ`** と表記。
+  - `専用詳細画面 ↗` ➔ **`詳細画面 ↗`** と表記。
+  - `簡易表示 ▼ / 簡易表示閉じる ▲` ➔ **`表示 ▼ / 非表示 ▲`** と表記。
+
+---
+
+## 4. フロントエンド UI / UX 仕様
+
+1. **ダッシュボード画面 (`HomeView.vue`)**:
+   - **トップナビゲーションタブ**: `📋 通話データ一覧` と `👔 営業担当者別 パフォーマンス集計` の2タブ切替。
+   - **営業担当者別パフォーマンス分析**: 担当者ごとの平均成約率、総通話数、S/Aランク獲得数、獲得ランク内訳バッジ（例: `非常に有望 ×2`）を集計・可視化。ワンタップでその担当者の通話履歴へドリルダウン絞り込み。
+   - **2列〜3列 レスポンシブグリッドカード配置**: PC表示時は横3列 (`lg:grid-cols-3`)、タブレット表示時は横2列 (`md:grid-cols-2`) のカード配置。
+   - **64px 拡大円形アニメーション成約率ゲージ**: スクロール進入検知（`IntersectionObserver`）により、画面視認時に 0% から目標％へ 3.8秒かけてゆったり優雅にリングと数字が拡大同期伸長。画面外スクロールアウト時は 0% にリセットされ、再視認時に再アニメーション。
+2. **専用カスタム音声プレイヤー (`CustomAudioPlayer.vue`)**:
+   - 音量コントロールはホバー/タップ時に**上向き縦型ポップオーバー** (`writing-mode: vertical-lr`) で展開し、再生タイムラインシークバーとの干渉を完全に防ぐ構造。
+3. **新規アップロード画面 (`UploadView.vue`)**:
+   - ファイル選択時に **`✖ 選択解除`** ボタンを完備。
+   - Celery 解析完了時に成功通知を表示し、**1.5秒後にダッシュボード (`/`) へ自動リダイレクト**。
+4. **日時タイムゾーン自動変換**:
+   - DBに保存された UTC 日時 ISO 文字列に `Z` を自動補正し、JST（日本標準時 UTC+9, `YYYY/MM/DD HH:mm`）形式に正確に変換して表示。
+
+---
+
+## 5. 全体アーキテクチャ構成図
 
 ```mermaid
 flowchart TB
-    subgraph Frontend ["フロントエンド (Vue 3 + Tailwind CSS)"]
-        UI[ダッシュボード画面 / HomeView.vue]
+    subgraph Frontend ["フロントエンド (Vue 3 + Tailwind CSS + Pinia)"]
+        UI[HomeView.vue / DetailView.vue / UploadView.vue]
+        Player[CustomAudioPlayer.vue]
     end
 
     subgraph Backend ["バックエンド API (FastAPI)"]
@@ -60,7 +102,8 @@ flowchart TB
     end
 
     UI <-->|HTTP REST / Axios| API
-    API -->|音声保存/再生| MinIO
+    UI --- Player
+    API -->|音声保存/ストリーミング| MinIO
     API -->|非同期タスクキュー投函| Redis
     Redis -->|タスク受信| Worker
 
@@ -82,7 +125,7 @@ flowchart TB
 
 ---
 
-## 4. 通話処理シーケンス図 (非同期処理パイプライン)
+## 6. 通話処理シーケンス図 (非同期処理パイプライン)
 
 ```mermaid
 sequenceDiagram
@@ -96,100 +139,35 @@ sequenceDiagram
     participant AI as AIモジュール (Whisper/Pyannote/Gemini)
     participant DB as PostgreSQL DB
 
-    User->>FE: 音声ファイルアップロード
-    FE->>BE: POST /upload/
+    User->>FE: 音声ファイル選択 ＆ メタデータ入力
+    FE->>BE: POST /upload/ (音声アップロード)
     BE->>MinIO: 音声ファイル保存
-    MinIO-->>BE: 保存用ファイル名返却
-    BE-->>FE: アップロード成功レスポンス
+    MinIO-->>BE: 保存用ユニークファイル名返却
+    FE->>BE: POST /records/ (通話レコード登録)
+    BE->>DB: レコード保存
+    BE-->>FE: 登録成功レスポンス
 
-    User->>FE: 「STT文字起こし」ボタンクリック
+    User->>FE: 「⚡ AI解析」ボタンクリック (またはアップロード時自動実行)
     FE->>BE: POST /records/{id}/transcribe
-    BE->>Redis: transcribe_and_diarize_task キュー投入
-    BE-->>FE: 即時レスポンス (200 OK + task_id)
+    BE->>Redis: process_full_audio_pipeline_task キュー投入
+    BE-->>FE: 即時レスポンス (202 Accepted + task_id)
     
     par バックグラウンド実行
         Redis->>Worker: タスク取得
         Worker->>MinIO: 音声ファイルダウンロード
         Worker->>AI: 1. Whisper STT (テキスト化)
         Worker->>AI: 2. Pyannote (話者分離)
-        Worker->>AI: 3. 単語位置合わせ ＆ 句読点分割
-        AI-->>Worker: 話者付タイムラインテキスト
-        Worker->>DB: トランスクリプト保存
+        Worker->>AI: 3. Llama 3 (話者役割判定 Sales vs Customer)
+        AI-->>Worker: 話者識別付きタイムライン対話ログ
+        Worker->>DB: トランスクリプト一括保存
+        Worker->>AI: 4. Gemini 2.0 Flash (スコアリング ＆ 要約)
+        AI-->>Worker: 成約率(%), S〜Eランク, 関心点, 懸念点, 推奨アクション
+        Worker->>DB: 分析結果保存 (Upsert)
     and フロントエンドポーリング
         loop 2秒間隔でステータス確認
             FE->>BE: GET /tasks/{task_id}
             BE-->>FE: ステータス (PENDING / SUCCESS)
         end
     end
-    FE->>User: ダッシュボードUI更新 (文字起こし完了表示)
-
-    User->>FE: 「AIスコアリング」ボタンクリック
-    FE->>BE: POST /records/{id}/score
-    BE->>Redis: score_record_task キュー投入
-    BE-->>FE: 即時レスポンス (200 OK + task_id)
-
-    par バックグラウンド実行
-        Redis->>Worker: タスク取得
-        Worker->>DB: トランスクリプト取得
-        Worker->>AI: Gemini / Groq LLM スコアリング
-        AI-->>Worker: S〜Eランク, 成約確率, 推奨アクション (JSON)
-        Worker->>DB: 分析結果保存 / 更新 (Upsert)
-    and フロントエンドポーリング
-        loop 2秒間隔でステータス確認
-            FE->>BE: GET /tasks/{task_id}
-            BE-->>FE: ステータス (PENDING / SUCCESS)
-        end
-    end
-    FE->>User: ダッシュボードUI自動更新 (ランクバッジ・成約確率表示)
+    FE->>User: 緑の成功通知表示 ➔ 1.5秒後にダッシュボードへ自動遷移
 ```
-
----
-
-## 5. データベース設計書 (ER図)
-
-```mermaid
-erDiagram
-    CALL_RECORD ||--o{ TRANSCRIPT : "1対多 (対話ログ)"
-    CALL_RECORD ||--o| ANALYSIS_RESULT : "1対1 (AI分析結果)"
-
-    CALL_RECORD {
-        int id PK "通話レコードID"
-        string sales_code "営業担当コード"
-        string customer_phone "顧客電話番号"
-        int call_duration "通話時間(秒)"
-        string audio_file_path "音声ファイルパス"
-        datetime created_at "登録日時"
-    }
-
-    TRANSCRIPT {
-        int id PK "対話ID"
-        int call_record_id FK "通話レコードID"
-        string speaker "話者 (Sales/Customer)"
-        text text "発言内容"
-        float start_time "開始時間(秒)"
-        float end_time "終了時間(秒)"
-    }
-
-    ANALYSIS_RESULT {
-        int id PK "分析ID"
-        int call_record_id FK "通話レコードID"
-        string rank "S〜Eランク (S, A, B, C, D, E)"
-        int purchase_probability "成約確率(0-100%)"
-        text customer_interest "顧客関心点"
-        text concerns "懸念点・反論"
-        text recommended_action "推奨アクション"
-    }
-```
-
----
-
-## 6. API設計書 (主要エンドポイント)
-
-| HTTPメソッド | エンドポイント | 説明 | リクエスト / レスポンス仕様 |
-| :--- | :--- | :--- | :--- |
-| `POST` | `/upload/` | 音声ファイルアップロード | `multipart/form-data` ➔ 保存ファイル名返却 |
-| `POST` | `/records/{id}/transcribe` | STT文字起こし ＆ 話者分離 | Whisper + Pyannote ＋ Llama3 実行 ＆ DB保存 |
-| `POST` | `/records/{id}/summarize` | AI通話要約 ＆ シグナル抽出 | Gemini 2.0 Flash 実行（要約・シグナル返却） |
-| `POST` | `/records/{id}/score` | AIスコアリング実行 | Gemini Structured Output 実行 ＆ DB保存 (Upsert) |
-| `GET` | `/records/` | 全通話記録・分析結果の取得 | レスポンス: 一覧データ（JSON） |
-| `GET` | `/records/{id}/export/csv` | CSVレポート出力 | レスポンス: BOM付き UTF-8 CSVファイル |

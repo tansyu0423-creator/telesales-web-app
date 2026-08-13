@@ -211,3 +211,40 @@ async def test_get_task_status_endpoint():
             assert data["task_id"] == "mock-task-id-12345"
             assert data["status"] == "SUCCESS"
             assert data["result"]["status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_upload_and_transcribe_record():
+    """POST /records/upload-and-transcribe の一括処理テスト"""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        fake_wav = io.BytesIO(b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00")
+        files = {"file": ("test_call.wav", fake_wav, "audio/wav")}
+        data = {
+            "sales_rep_code": "SALES_100",
+            "customer_phone": "090-1111-2222",
+            "duration": "180"
+        }
+
+        class MockTask:
+            id = "mock-pipeline-task-id-999"
+
+        with patch("main.minio_client.put_object"), \
+             patch("main.ensure_bucket_exists"), \
+             patch("tasks.full_pipeline_task.delay", return_value=MockTask()):
+            response = await ac.post("/records/upload-and-transcribe", files=files, data=data)
+            assert response.status_code == 200
+            res_data = response.json()
+            assert res_data["sales_code"] == "SALES_100"
+            assert res_data["customer_phone"] == "090-1111-2222"
+            assert res_data["task_id"] == "mock-pipeline-task-id-999"
+
+
+def test_derive_rank_from_probability():
+    from llm_analysis import derive_rank_from_probability
+    assert derive_rank_from_probability(94) == "S"
+    assert derive_rank_from_probability(87) == "A"
+    assert derive_rank_from_probability(70) == "A"
+    assert derive_rank_from_probability(63) == "B"
+    assert derive_rank_from_probability(49) == "C"
+    assert derive_rank_from_probability(27) == "D"
+    assert derive_rank_from_probability(8) == "E"
