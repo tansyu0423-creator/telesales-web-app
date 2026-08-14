@@ -1,9 +1,26 @@
+import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-class Settings(BaseSettings):
-    database_url: str
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-    # .env ファイルから設定を読み込む
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+class Settings(BaseSettings):
+    database_url: str = "postgresql+asyncpg://user:password@localhost:5432/telesales_db"
+    minio_endpoint: str = "localhost:9000"
+    minio_access_key: str = "minioadmin"
+    minio_secret_key: str = "minioadmin"
+    minio_bucket_name: str = "telesales-audio"
+    minio_secure: bool = False
+
+    groq_api_key: str = ""
+    gemini_api_key: str = ""
+
+    celery_broker_url: str = "redis://localhost:6379/0"
+    celery_result_backend: str = "redis://localhost:6379/1"
+
+    # .env ファイルから設定を読み込む（開発環境・テスト環境のパスに対応）
+    model_config = SettingsConfigDict(
+        env_file=(os.path.join(BASE_DIR, ".env"), ".env"),
+        extra="ignore"
+    )
 
 settings = Settings()

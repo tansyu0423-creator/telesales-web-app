@@ -1,0 +1,7 @@
+{
+  "venvPath": "/home/SHUNTAF/Desktop/telesales_scoring",
+  "venv": ".venv",
+  "extraPaths": [
+    "/home/SHUNTAF/Desktop/telesales_scoring/backend"
+  ]
+}

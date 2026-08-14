@@ -1,7 +1,10 @@
 from sqlalchemy import Column, Integer, String, Text, DateTime, Float, ForeignKey
 from sqlalchemy.orm import relationship
-from database import Base
-import datetime
+try:
+    from .database import Base
+except ImportError:
+    from database import Base
+from datetime import datetime, timezone
 
 class CallRecord(Base):
     __tablename__ = "call_records"
@@ -11,7 +14,7 @@ class CallRecord(Base):
     customer_phone = Column(String(20))         
     call_duration = Column(Integer)             
     audio_file_path = Column(String(255))       
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
     transcripts = relationship("Transcript", back_populates="call_record", lazy="selectin")
     analysis = relationship("AnalysisResult", back_populates="call_record", uselist=False, lazy="selectin")
