@@ -121,7 +121,7 @@ onUnmounted(() => {
     </span>
 
     <!-- シークバー (タイムライン) -->
-    <div class="relative flex-1 flex items-center">
+    <div class="relative flex-1 min-w-0 flex items-center">
       <input 
         type="range" 
         min="0" 
