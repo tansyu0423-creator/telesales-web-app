@@ -52,6 +52,7 @@ const searchQuery = ref('')
 const sortBy = ref('date_desc')
 const activeTab = ref('records') // 'records' | 'analytics'
 const selectedSalesRep = ref('')
+const viewMode = ref('table') // 'table' | 'card'
 
 const kpiStats = computed(() => {
   const total = records.value.length
@@ -599,6 +600,30 @@ onUnmounted(() => {
               {{ rank === 'ALL' ? 'すべて' : `${rank}：${getRankLabel(rank)}` }}
             </button>
           </div>
+
+          <!-- 表示モード切替（テーブル ⇄ カード） -->
+          <div class="flex items-center gap-1 bg-slate-900/90 p-1 rounded-xl border border-slate-700/80 shrink-0">
+            <button 
+              @click="viewMode = 'table'"
+              :class="[
+                'px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5',
+                viewMode === 'table' ? 'bg-sky-500 text-slate-950 shadow-md font-extrabold' : 'text-slate-400 hover:text-slate-200'
+              ]"
+            >
+              <span>📊</span>
+              <span>テーブル</span>
+            </button>
+            <button 
+              @click="viewMode = 'card'"
+              :class="[
+                'px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5',
+                viewMode === 'card' ? 'bg-sky-500 text-slate-950 shadow-md font-extrabold' : 'text-slate-400 hover:text-slate-200'
+              ]"
+            >
+              <span>🎴</span>
+              <span>カード</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -612,12 +637,216 @@ onUnmounted(() => {
         該当する通話データが存在しません。
       </div>
 
-      <!-- 2列〜3列 レスポンシブ・グリッドカード表示 -->
-      <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+      <!-- 1. テーブル（表）形式表示 (viewMode === 'table') -->
+      <div v-else-if="viewMode === 'table'" class="overflow-x-auto rounded-2xl border border-slate-700/60 bg-slate-800/80 backdrop-blur-sm shadow-xl">
+        <table class="w-full text-left text-xs border-collapse min-w-[900px]">
+          <thead>
+            <tr class="bg-slate-900/90 border-b border-slate-700/80 text-slate-400 font-semibold uppercase tracking-wider text-[11px]">
+              <th class="py-3.5 px-3 text-center w-12">開閉</th>
+              <th class="py-3.5 px-4 font-mono">#ID</th>
+              <th class="py-3.5 px-4">📅 登録日時</th>
+              <th class="py-3.5 px-4">👔 営業担当</th>
+              <th class="py-3.5 px-4">📞 顧客電話番号</th>
+              <th class="py-3.5 px-4">⏱ 通話時間</th>
+              <th class="py-3.5 px-4">🏆 顧客ランク</th>
+              <th class="py-3.5 px-4">⚡ 成約率</th>
+              <th class="py-3.5 px-4 text-right">操作</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-700/50">
+            <template v-for="record in filteredRecords" :key="record.id">
+              <tr 
+                @click="toggleRecordDetail(record.id)"
+                class="hover:bg-slate-700/40 transition-colors cursor-pointer group"
+              >
+                <!-- 開閉ボタン (最左列) -->
+                <td class="py-3.5 px-3 text-center">
+                  <button 
+                    @click.stop="toggleRecordDetail(record.id)"
+                    :class="[
+                      'w-7 h-7 inline-flex items-center justify-center rounded-lg text-xs font-bold transition-all border cursor-pointer',
+                      isRecordDetailOpen(record.id) 
+                        ? 'bg-sky-500 text-slate-950 border-sky-400 font-black shadow-md' 
+                        : 'bg-slate-900/80 text-slate-400 border-slate-700 group-hover:border-slate-500 group-hover:text-slate-200'
+                    ]"
+                    :title="isRecordDetailOpen(record.id) ? '詳細を閉じる' : '詳細を開く'"
+                  >
+                    {{ isRecordDetailOpen(record.id) ? '▲' : '▼' }}
+                  </button>
+                </td>
+                <!-- ID -->
+                <td class="py-3.5 px-4 font-mono">
+                  <span class="bg-slate-900 px-2 py-0.5 rounded text-sky-400 font-bold border border-slate-700">#{{ record.id }}</span>
+                </td>
+                <!-- 登録日時 -->
+                <td class="py-3.5 px-4 font-mono text-slate-300 whitespace-nowrap">
+                  {{ formatDateTime(record.created_at) }}
+                </td>
+                <!-- 営業担当コード -->
+                <td class="py-3.5 px-4 font-bold text-white whitespace-nowrap">
+                  👔 {{ record.sales_code }}
+                </td>
+                <!-- 顧客電話番号 -->
+                <td class="py-3.5 px-4 text-slate-200 font-mono whitespace-nowrap">
+                  {{ record.customer_phone }}
+                </td>
+                <!-- 通話時間 -->
+                <td class="py-3.5 px-4 text-slate-300 font-mono whitespace-nowrap">
+                  {{ record.call_duration }} 秒
+                </td>
+                <!-- ランクバッジ -->
+                <td class="py-3.5 px-4 whitespace-nowrap">
+                  <span v-if="record.analysis" :class="['px-2.5 py-1 rounded text-xs font-black inline-block shadow-sm', getRankBadgeClass(record.analysis.rank)]">
+                    {{ record.analysis.rank }}：{{ getRankLabel(record.analysis.rank) }}
+                  </span>
+                  <span v-else class="px-2 py-0.5 rounded text-xs bg-slate-700 text-slate-400">
+                    未分析
+                  </span>
+                </td>
+                <!-- 成約率 (カードと完全同一の拡大円形アニメーションゲージ) -->
+                <td class="py-3.5 px-4 whitespace-nowrap">
+                  <div v-if="record.analysis" class="flex items-center gap-2">
+                    <div 
+                      :data-gauge-id="`t-${record.id}`"
+                      :data-probability="record.analysis.purchase_probability"
+                      class="relative flex items-center justify-center w-12 h-12 shrink-0 bg-slate-950 rounded-full border border-slate-800 p-0.5 shadow-md"
+                    >
+                      <svg class="w-full h-full -rotate-90" viewBox="0 0 64 64">
+                        <circle cx="32" cy="32" r="25" stroke="#334155" stroke-width="5" fill="none" />
+                        <circle
+                          cx="32"
+                          cy="32"
+                          r="25"
+                          :stroke="`url(#gradient-t-${record.id})`"
+                          stroke-width="5"
+                          stroke-linecap="round"
+                          fill="none"
+                          stroke-dasharray="157.08"
+                          :stroke-dashoffset="gaugeAnimatedMap[`t-${record.id}`] ? (157.08 - (157.08 * (record.analysis.purchase_probability || 0) / 100)) : 157.08"
+                          style="transition: stroke-dashoffset 3.8s cubic-bezier(0.16, 1, 0.3, 1);"
+                        />
+                        <defs>
+                          <linearGradient :id="`gradient-t-${record.id}`" x1="0%" y1="0%" x2="100%" y2="100%">
+                            <stop offset="0%" stop-color="#38bdf8" />
+                            <stop offset="100%" stop-color="#34d399" />
+                          </linearGradient>
+                        </defs>
+                      </svg>
+                      <div class="absolute inset-0 flex items-center justify-center">
+                        <span class="text-xs font-black text-white font-mono">
+                          {{ gaugeValueMap[`t-${record.id}`] || 0 }}%
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  <span v-else class="text-slate-500 font-mono text-[11px]">-</span>
+                </td>
+                <!-- アクション操作ボタン -->
+                <td class="py-3.5 px-4 text-right whitespace-nowrap" @click.stop>
+                  <div class="flex items-center justify-end gap-1.5">
+                    <button 
+                      v-if="!record.analysis"
+                      @click="handleAnalyze(record.id)" 
+                      class="px-2 py-1 bg-sky-600 hover:bg-sky-500 text-white rounded-lg font-semibold disabled:opacity-50 cursor-pointer text-xs"
+                      :disabled="actionLoading[`${record.id}_analyze`]"
+                    >
+                      {{ actionLoading[`${record.id}_analyze`] ? '⏳ 解析中' : '⚡ AI解析' }}
+                    </button>
+                    <button 
+                      @click="handleExportCsv(record.id)" 
+                      class="px-2 py-1 bg-slate-900/80 hover:bg-slate-900 text-slate-300 border border-slate-700 hover:border-slate-600 rounded-lg font-semibold cursor-pointer text-xs"
+                      title="CSVレポート出力"
+                    >
+                      📥 CSV
+                    </button>
+                    <button 
+                      @click="toggleRecordDetail(record.id)"
+                      :class="[
+                        'px-2 py-1 font-semibold rounded-lg transition-all cursor-pointer border text-xs',
+                        isRecordDetailOpen(record.id) 
+                          ? 'bg-sky-500 text-slate-950 border-sky-400 font-bold' 
+                          : 'bg-slate-900/60 text-slate-300 border-slate-700 hover:text-white'
+                      ]"
+                    >
+                      {{ isRecordDetailOpen(record.id) ? '非表示 ▲' : '表示 ▼' }}
+                    </button>
+                    <button 
+                      @click="$router.push(`/records/${record.id}`)"
+                      class="px-2.5 py-1 bg-sky-950/90 hover:bg-sky-900/90 text-sky-300 hover:text-sky-200 border border-sky-800/80 hover:border-sky-600 rounded-lg font-bold transition-all cursor-pointer inline-flex items-center gap-0.5 shadow-sm text-xs"
+                    >
+                      <span>詳細画面</span>
+                      <span>↗</span>
+                    </button>
+                  </div>
+                </td>
+              </tr>
+              <!-- 行拡張アコーディオン詳細 -->
+              <tr v-if="isRecordDetailOpen(record.id)" class="bg-slate-900/60">
+                <td colspan="9" class="p-4 border-b border-slate-700/60">
+                  <div class="flex flex-col gap-3">
+                    <div v-if="record.audio_file_path" class="flex items-center gap-3 w-full max-w-2xl">
+                      <CustomAudioPlayer :src="`http://localhost:8000/audio/${record.audio_file_path}`" />
+                    </div>
+                    <!-- AI分析サマリー (3プロック構成) -->
+                    <div v-if="record.analysis" class="grid grid-cols-1 md:grid-cols-3 gap-2 border border-slate-700/40 rounded-xl p-2.5 bg-slate-950/60">
+                      <div class="bg-slate-900/90 p-2.5 rounded-lg border-l-4 border-emerald-400 space-y-0.5">
+                        <h4 class="font-bold text-emerald-400 text-xs flex items-center gap-1">
+                          <span>💡 顧客の関心点</span>
+                        </h4>
+                        <p class="text-xs text-slate-300 leading-relaxed">{{ record.analysis.customer_interest }}</p>
+                      </div>
+                      <div class="bg-slate-900/90 p-2.5 rounded-lg border-l-4 border-amber-400 space-y-0.5">
+                        <h4 class="font-bold text-amber-400 text-xs flex items-center gap-1">
+                          <span>⚠️ 懸念点・反論ボトルネック</span>
+                        </h4>
+                        <p class="text-xs text-slate-300 leading-relaxed">{{ record.analysis.concerns }}</p>
+                      </div>
+                      <div class="bg-slate-900/90 p-2.5 rounded-lg border-l-4 border-sky-400 space-y-0.5">
+                        <h4 class="font-bold text-sky-400 text-xs flex items-center gap-1">
+                          <span>🚀 推奨アクション</span>
+                        </h4>
+                        <p class="text-xs text-slate-300 leading-relaxed">{{ record.analysis.recommended_action }}</p>
+                      </div>
+                    </div>
+                    <!-- 話者対話ログ -->
+                    <div class="space-y-2">
+                      <h4 class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">💬 対話ログ (話者識別: 営業 vs 顧客)</h4>
+                      <div v-if="record.transcripts.length === 0" class="text-xs text-slate-500 italic py-1">
+                        対話ログデータが存在しません。「AI解析」を実行してください。
+                      </div>
+                      <div v-else class="flex flex-col gap-2 max-h-72 overflow-y-auto pr-1">
+                        <div 
+                          v-for="t in record.transcripts" 
+                          :key="t.id" 
+                          :class="[
+                            'p-2.5 rounded-lg max-w-[90%] text-xs border leading-relaxed',
+                            t.speaker === 'Sales' 
+                              ? 'self-start bg-sky-950/40 border-sky-800/50 text-sky-100' 
+                              : 'self-end bg-emerald-950/40 border-emerald-800/50 text-emerald-100'
+                          ]"
+                        >
+                          <div class="flex justify-between items-center text-[10px] text-slate-400 mb-0.5 gap-2">
+                            <span class="font-bold text-slate-200">{{ t.speaker === 'Sales' ? '👔 営業担当者' : '👤 顧客' }}</span>
+                            <span class="font-mono text-slate-500">{{ t.start_time.toFixed(1) }}s - {{ t.end_time.toFixed(1) }}s</span>
+                          </div>
+                          <div>{{ t.text }}</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- 2. メイソンリー（段組み・空隙自動埋め）カード表示 (viewMode === 'card') -->
+      <div v-else class="columns-1 md:columns-2 lg:columns-3 gap-4 space-y-4">
         <div 
           v-for="record in filteredRecords" 
           :key="record.id" 
-          class="bg-slate-800/80 backdrop-blur-sm border border-slate-700/60 rounded-xl p-4 shadow-lg hover:border-slate-500 transition-all flex flex-col justify-between"
+          class="break-inside-avoid bg-slate-800/80 backdrop-blur-sm border border-slate-700/60 rounded-xl p-4 shadow-lg hover:border-slate-500 transition-all flex flex-col justify-between mb-4"
         >
           <div class="space-y-3">
             <!-- 1. ヘッダー: ID・担当者コード ＆ ランクバッジ -->
