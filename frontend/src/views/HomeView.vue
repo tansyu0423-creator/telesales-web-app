@@ -360,7 +360,7 @@ onUnmounted(() => {
 
 <template>
   <!-- テレセールス・アナリティクス・メインダッシュボード -->
-  <div class="max-w-5xl mx-auto px-4 py-8 text-slate-100">
+  <div class="w-full max-w-[1600px] mx-auto px-2 sm:px-4 py-8 text-slate-100">
     <!-- 画面右上に常に固定配置される「データ更新」ボタン -->
     <button 
       @click="fetchRecords" 
@@ -783,43 +783,43 @@ onUnmounted(() => {
               <!-- 行拡張アコーディオン詳細 -->
               <tr v-if="isRecordDetailOpen(record.id)" class="bg-slate-900/60">
                 <td colspan="9" class="p-4 border-b border-slate-700/60">
-                  <div class="flex flex-col gap-3">
+                  <div class="flex flex-col gap-3.5 w-full max-w-full overflow-hidden">
                     <div v-if="record.audio_file_path" class="flex items-center gap-3 w-full max-w-2xl">
                       <CustomAudioPlayer :src="`http://localhost:8000/audio/${record.audio_file_path}`" />
                     </div>
-                    <!-- AI分析サマリー (3プロック構成) -->
-                    <div v-if="record.analysis" class="grid grid-cols-1 md:grid-cols-3 gap-2 border border-slate-700/40 rounded-xl p-2.5 bg-slate-950/60">
-                      <div class="bg-slate-900/90 p-2.5 rounded-lg border-l-4 border-emerald-400 space-y-0.5">
+                    <!-- AI分析サマリー (3ブロック構成) -->
+                    <div v-if="record.analysis" class="grid grid-cols-1 md:grid-cols-3 gap-3 border border-slate-700/40 rounded-xl p-3 bg-slate-950/60 w-full">
+                      <div class="bg-slate-900/90 p-3 rounded-lg border-l-4 border-emerald-400 space-y-1">
                         <h4 class="font-bold text-emerald-400 text-xs flex items-center gap-1">
                           <span>💡 顧客の関心点</span>
                         </h4>
-                        <p class="text-xs text-slate-300 leading-relaxed">{{ record.analysis.customer_interest }}</p>
+                        <p class="text-xs text-slate-300 leading-relaxed break-words">{{ record.analysis.customer_interest }}</p>
                       </div>
-                      <div class="bg-slate-900/90 p-2.5 rounded-lg border-l-4 border-amber-400 space-y-0.5">
+                      <div class="bg-slate-900/90 p-3 rounded-lg border-l-4 border-amber-400 space-y-1">
                         <h4 class="font-bold text-amber-400 text-xs flex items-center gap-1">
                           <span>⚠️ 懸念点・反論ボトルネック</span>
                         </h4>
-                        <p class="text-xs text-slate-300 leading-relaxed">{{ record.analysis.concerns }}</p>
+                        <p class="text-xs text-slate-300 leading-relaxed break-words">{{ record.analysis.concerns }}</p>
                       </div>
-                      <div class="bg-slate-900/90 p-2.5 rounded-lg border-l-4 border-sky-400 space-y-0.5">
+                      <div class="bg-slate-900/90 p-3 rounded-lg border-l-4 border-sky-400 space-y-1">
                         <h4 class="font-bold text-sky-400 text-xs flex items-center gap-1">
                           <span>🚀 推奨アクション</span>
                         </h4>
-                        <p class="text-xs text-slate-300 leading-relaxed">{{ record.analysis.recommended_action }}</p>
+                        <p class="text-xs text-slate-300 leading-relaxed break-words">{{ record.analysis.recommended_action }}</p>
                       </div>
                     </div>
                     <!-- 話者対話ログ -->
-                    <div class="space-y-2">
+                    <div class="space-y-2 w-full">
                       <h4 class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">💬 対話ログ (話者識別: 営業 vs 顧客)</h4>
                       <div v-if="record.transcripts.length === 0" class="text-xs text-slate-500 italic py-1">
                         対話ログデータが存在しません。「AI解析」を実行してください。
                       </div>
-                      <div v-else class="flex flex-col gap-2 max-h-72 overflow-y-auto pr-1">
+                      <div v-else class="flex flex-col gap-2 max-h-80 overflow-y-auto pr-1 w-full">
                         <div 
                           v-for="t in record.transcripts" 
                           :key="t.id" 
                           :class="[
-                            'p-2.5 rounded-lg max-w-[90%] text-xs border leading-relaxed',
+                            'p-2.5 rounded-lg max-w-[85%] md:max-w-[70%] text-xs border leading-relaxed break-words',
                             t.speaker === 'Sales' 
                               ? 'self-start bg-sky-950/40 border-sky-800/50 text-sky-100' 
                               : 'self-end bg-emerald-950/40 border-emerald-800/50 text-emerald-100'
@@ -829,7 +829,7 @@ onUnmounted(() => {
                             <span class="font-bold text-slate-200">{{ t.speaker === 'Sales' ? '👔 営業担当者' : '👤 顧客' }}</span>
                             <span class="font-mono text-slate-500">{{ t.start_time.toFixed(1) }}s - {{ t.end_time.toFixed(1) }}s</span>
                           </div>
-                          <div>{{ t.text }}</div>
+                          <div class="break-words">{{ t.text }}</div>
                         </div>
                       </div>
                     </div>

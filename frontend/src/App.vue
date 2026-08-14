@@ -1,15 +1,15 @@
 <template>
-  <div class="min-h-screen bg-gray-50">
-    <header class="bg-white shadow-sm border-b border-gray-200">
-      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+  <div class="min-h-screen bg-slate-950 text-slate-100">
+    <header class="bg-slate-900 border-b border-slate-800 shadow-lg">
+      <div class="w-full max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8">
         <div class="flex justify-between h-16">
           <div class="flex items-center space-x-8">
-            <h1 class="text-xl font-bold text-blue-600">AI Telesales Scoring</h1>
+            <h1 class="text-xl font-black text-sky-400">AI Telesales Scoring</h1>
             <nav class="hidden md:flex space-x-4">
-              <RouterLink to="/" class="text-gray-600 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium transition-colors" exact-active-class="text-blue-600 bg-blue-50">
+              <RouterLink to="/" class="text-slate-400 hover:text-sky-400 px-3 py-2 rounded-md text-sm font-medium transition-colors" exact-active-class="text-sky-400 bg-sky-950/60 border border-sky-800/60">
                 ダッシュボード
               </RouterLink>
-              <RouterLink to="/upload" class="text-gray-600 hover:text-blue-600 px-3 py-2 rounded-md text-sm font-medium transition-colors" exact-active-class="text-blue-600 bg-blue-50">
+              <RouterLink to="/upload" class="text-slate-400 hover:text-sky-400 px-3 py-2 rounded-md text-sm font-medium transition-colors" exact-active-class="text-sky-400 bg-sky-950/60 border border-sky-800/60">
                 音声アップロード
               </RouterLink>
             </nav>
@@ -18,7 +18,7 @@
       </div>
     </header>
 
-    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <main class="w-full max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-8">
       <RouterView />
     </main>
   </div>
