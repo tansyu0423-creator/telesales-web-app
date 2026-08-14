@@ -76,7 +76,7 @@
           <div class="flex items-center justify-between mb-1">
             <label class="block text-sm font-bold text-gray-700">通話時間（秒）</label>
             <span v-if="store.metadata.duration > 0" class="text-xs text-emerald-600 font-semibold flex items-center gap-1 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-              ✨ 音声ファイルより自動検出されました
+              音声ファイルより自動検出されました
             </span>
           </div>
           <input

@@ -3,7 +3,8 @@ import tempfile
 import uuid
 import csv
 import io
-from typing import List
+import json
+from typing import List, Dict, TypedDict
 
 from fastapi import FastAPI, Depends, HTTPException, File, UploadFile, status, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -65,6 +66,133 @@ async def get_db():
 def health_check():
     return {"status": "ok"}
 
+# ---------------------------------------------
+# 認証 API
+# ---------------------------------------------
+class DemoUserInfo(TypedDict):
+    passwords: List[str]
+    name: str
+    role: str
+
+DEMO_USERS: Dict[str, DemoUserInfo] = {
+    "admin": {"passwords": ["telesales2026!", "password"], "name": "管理者 ユーザー", "role": "管理者"},
+    "sales": {"passwords": ["telesales2026!", "password"], "name": "営業担当 A", "role": "マネージャー"},
+    "rep101": {"passwords": ["telesales2026!", "password"], "name": "REP-101 (佐藤)", "role": "営業担当者"}
+}
+
+@app.post("/login", response_model=schemas.LoginResponse, tags=["Authentication"])
+async def login(credentials: schemas.LoginRequest):
+    """ユーザー認証を行うAPI"""
+    user_info = DEMO_USERS.get(credentials.username.lower())
+    valid_passwords = user_info.get("passwords", []) if user_info else []
+    
+    if not user_info or credentials.password not in valid_passwords:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="ユーザー名またはパスワードが正しくありません"
+        )
+    
+    token = f"token-{credentials.username.lower()}-session"
+    return schemas.LoginResponse(
+        access_token=token,
+        token_type="bearer",
+        username=credentials.username.lower(),
+        name=user_info["name"],
+        role=user_info["role"]
+    )
+
+# ---------------------------------------------
+# システム設定 ＆ ユーザー管理 API
+# ---------------------------------------------
+CONFIG_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "system_config.json")
+
+def load_system_config() -> dict:
+    if os.path.exists(CONFIG_FILE_PATH):
+        try:
+            with open(CONFIG_FILE_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {
+        "gemini_api_key": settings.gemini_api_key or "",
+        "groq_api_key": settings.groq_api_key or "",
+        "openrouter_api_key": settings.openrouter_api_key or "",
+        "llm_provider": "gemini",
+        "rank_thresholds": {
+            "s_rank": 90,
+            "a_rank": 70,
+            "b_rank": 50,
+            "c_rank": 30,
+            "d_rank": 10
+        },
+        "custom_prompt_instructions": "顧客のニーズ、予算感、決裁プロセス、競合比較を重視して評価してください。"
+    }
+
+def save_system_config(config_data: dict):
+    with open(CONFIG_FILE_PATH, "w", encoding="utf-8") as f:
+        json.dump(config_data, f, ensure_ascii=False, indent=2)
+
+@app.get("/settings/users", response_model=List[schemas.UserResponse], tags=["Settings"])
+async def get_users():
+    """ユーザー一覧を取得するAPI"""
+    return [
+        schemas.UserResponse(
+            username=uname,
+            name=info["name"],
+            role=info["role"],
+            passwords=info["passwords"]
+        )
+        for uname, info in DEMO_USERS.items()
+    ]
+
+@app.post("/settings/users", response_model=schemas.UserResponse, tags=["Settings"])
+async def create_user(user: schemas.UserCreate):
+    """ユーザーを追加・登録するAPI"""
+    uname = user.username.lower().strip()
+    if not uname:
+        raise HTTPException(status_code=400, detail="ユーザー名を入力してください")
+    
+    DEMO_USERS[uname] = {
+        "passwords": [user.password],
+        "name": user.name,
+        "role": user.role
+    }
+    return schemas.UserResponse(
+        username=uname,
+        name=user.name,
+        role=user.role,
+        passwords=[user.password]
+    )
+
+@app.delete("/settings/users/{username}", status_code=status.HTTP_200_OK, tags=["Settings"])
+async def delete_user(username: str):
+    """指定したユーザーを削除するAPI"""
+    uname = username.lower()
+    if uname in DEMO_USERS:
+        del DEMO_USERS[uname]
+        return {"status": "success", "message": f"ユーザー {username} を削除しました"}
+    raise HTTPException(status_code=404, detail="指定されたユーザーが存在しません")
+
+@app.get("/settings/config", response_model=schemas.SystemConfig, tags=["Settings"])
+async def get_system_config():
+    """現在のシステム・AI設定を取得するAPI"""
+    return load_system_config()
+
+@app.post("/settings/config", response_model=schemas.SystemConfig, tags=["Settings"])
+async def update_system_config(config: schemas.SystemConfig):
+    """システム・AI設定を更新・保存するAPI"""
+    config_dict = config.model_dump()
+    save_system_config(config_dict)
+    
+    if config.gemini_api_key:
+        os.environ["GEMINI_API_KEY"] = config.gemini_api_key
+    if config.groq_api_key:
+        os.environ["GROQ_API_KEY"] = config.groq_api_key
+    if config.openrouter_api_key:
+        os.environ["OPENROUTER_API_KEY"] = config.openrouter_api_key
+        
+    return config_dict
+
 @app.post("/records/", response_model=schemas.CallRecord, tags=["Call Records"])
 async def create_record(record: schemas.CallRecordCreate, db: AsyncSession = Depends(get_db)):
     """新しい通話データを登録するAPI"""
@@ -82,6 +210,23 @@ async def read_record(record_id: int, db: AsyncSession = Depends(get_db)):
     if db_record is None:
         raise HTTPException(status_code=404, detail="Record not found")
     return db_record
+
+@app.delete("/records/{record_id}", status_code=status.HTTP_200_OK, tags=["Call Records"])
+async def delete_record(record_id: int, db: AsyncSession = Depends(get_db)):
+    """指定したIDの通話レコードおよび音声ファイル、文字起こし、分析結果を完全削除するAPI"""
+    db_record = await crud.get_call_record(db, record_id=record_id)
+    if not db_record:
+        raise HTTPException(status_code=404, detail="通話レコードが見つかりません")
+
+    # MinIOストレージから音声ファイルを削除（存在する場合）
+    if db_record.audio_file_path:
+        try:
+            minio_client.remove_object(settings.minio_bucket_name, str(db_record.audio_file_path))
+        except Exception as e:
+            print(f"Warning: Failed to delete object {db_record.audio_file_path} from MinIO: {e}")
+
+    await crud.delete_call_record(db, record_id=record_id)
+    return {"message": f"通話レコード #{record_id} を削除しました", "id": record_id}
 
 # ---------------------------------------------
 # 音声ファイルアップロードAPIを追加

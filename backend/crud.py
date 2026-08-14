@@ -36,7 +36,25 @@ async def create_or_update_analysis_result(db: AsyncSession, analysis_data: sche
         return existing_result
     else:
         db_analysis = models.AnalysisResult(**analysis_data.model_dump())
-        db.add(db_analysis)
-        await db.commit()
-        await db.refresh(db_analysis)
-        return db_analysis
+async def delete_call_record(db: AsyncSession, record_id: int):
+    # 1. 関連する文字起こしデータを削除
+    stmt_t = select(models.Transcript).where(models.Transcript.call_record_id == record_id)
+    res_t = await db.execute(stmt_t)
+    transcripts = res_t.scalars().all()
+    for t in transcripts:
+        await db.delete(t)
+
+    # 2. 関連するAI分析結果を削除
+    stmt_a = select(models.AnalysisResult).where(models.AnalysisResult.call_record_id == record_id)
+    res_a = await db.execute(stmt_a)
+    analysis = res_a.scalars().first()
+    if analysis:
+        await db.delete(analysis)
+
+    # 3. レコード本体を削除
+    db_record = await get_call_record(db, record_id)
+    if db_record:
+        await db.delete(db_record)
+
+    await db.commit()
+    return True

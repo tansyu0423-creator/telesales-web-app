@@ -84,6 +84,22 @@ watch(() => props.src, () => {
   }
 })
 
+const seekToAndPlay = (seconds) => {
+  if (!audioRef.value) return
+  const targetTime = Math.max(0, parseFloat(seconds) || 0)
+  audioRef.value.currentTime = targetTime
+  currentTime.value = targetTime
+  audioRef.value.play().then(() => {
+    isPlaying.value = true
+  }).catch((err) => {
+    console.error("Audio playback error:", err)
+  })
+}
+
+defineExpose({
+  seekToAndPlay
+})
+
 onUnmounted(() => {
   if (audioRef.value) {
     audioRef.value.pause()

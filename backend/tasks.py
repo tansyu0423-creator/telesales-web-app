@@ -28,6 +28,22 @@ minio_client = Minio(
 )
 
 
+def _run_async(coro):
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        new_loop = asyncio.new_event_loop()
+        try:
+            return new_loop.run_until_complete(coro)
+        finally:
+            new_loop.close()
+    else:
+        return asyncio.run(coro)
+
+
 @celery_app.task(bind=True, name="backend.tasks.transcribe_and_diarize_task")
 def transcribe_and_diarize_task(self, record_id: int) -> Dict[str, Any]:
     """
@@ -64,7 +80,7 @@ def transcribe_and_diarize_task(self, record_id: int) -> Dict[str, Any]:
                     response.release_conn()
 
             try:
-                # 2. 【魔法のツール】管理者権限なしで音声を本物のWAVに変換する
+                # 2. 管理者権限なしで音声を本物のWAVに変換する
                 import imageio_ffmpeg
                 import subprocess
                 ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
@@ -123,7 +139,16 @@ def transcribe_and_diarize_task(self, record_id: int) -> Dict[str, Any]:
                 if wav_audio_path and os.path.exists(wav_audio_path):
                     os.remove(wav_audio_path)
 
-    return asyncio.run(_async_transcribe())
+    try:
+        return _run_async(_async_transcribe())
+    except Exception as e:
+        error_msg = f"文字起こし・話者分離処理でエラーが発生しました: {str(e)}"
+        print(f"Task Error [transcribe_and_diarize_task]: {error_msg}")
+        return {
+            "status": "failure",
+            "record_id": record_id,
+            "error": error_msg
+        }
 
 
 @celery_app.task(bind=True, name="backend.tasks.score_record_task")
@@ -156,16 +181,47 @@ def score_record_task(self, record_id: int) -> Dict[str, Any]:
                 "recommended_action": saved_result.recommended_action
             }
 
-    return asyncio.run(_async_score())
+    try:
+        return _run_async(_async_score())
+    except Exception as e:
+        error_msg = f"AIスコアリング処理でエラーが発生しました: {str(e)}"
+        print(f"Task Error [score_record_task]: {error_msg}")
+        return {
+            "status": "failure",
+            "record_id": record_id,
+            "error": error_msg
+        }
 
 
 @celery_app.task(bind=True, name="backend.tasks.full_pipeline_task")
 def full_pipeline_task(self, record_id: int) -> Dict[str, Any]:
-    t_res = transcribe_and_diarize_task.apply(args=(record_id,)).get()
-    s_res = score_record_task.apply(args=(record_id,)).get()
-    return {
-        "status": "success",
-        "record_id": record_id,
-        "transcribe_result": t_res,
-        "score_result": s_res
-    }
+    try:
+        t_res = transcribe_and_diarize_task(record_id)
+        if isinstance(t_res, dict) and t_res.get("status") == "failure":
+            return {
+                "status": "failure",
+                "record_id": record_id,
+                "error": t_res.get("error", "文字起こし処理に失敗しました。")
+            }
+        s_res = score_record_task(record_id)
+        if isinstance(s_res, dict) and s_res.get("status") == "failure":
+            return {
+                "status": "failure",
+                "record_id": record_id,
+                "transcribe_result": t_res,
+                "error": s_res.get("error", "AIスコアリングに失敗しました。")
+            }
+        return {
+            "status": "success",
+            "record_id": record_id,
+            "transcribe_result": t_res,
+            "score_result": s_res
+        }
+    except Exception as e:
+        error_msg = f"パイプライン実行中に予期せぬエラーが発生しました: {str(e)}"
+        print(f"Task Error [full_pipeline_task]: {error_msg}")
+        return {
+            "status": "failure",
+            "record_id": record_id,
+            "error": error_msg
+        }

@@ -13,6 +13,7 @@ class Settings(BaseSettings):
 
     groq_api_key: str = ""
     gemini_api_key: str = ""
+    openrouter_api_key: str = ""
 
     celery_broker_url: str = "redis://localhost:6379/0"
     celery_result_backend: str = "redis://localhost:6379/1"

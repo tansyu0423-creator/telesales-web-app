@@ -11,11 +11,18 @@
 | メソッド | パス | タグ | 機能概要 |
 | :--- | :--- | :--- | :--- |
 | `GET` | `/health` | Health | サーバー正常稼働確認 |
+| `POST` | `/login` | Authentication | ユーザー名とパスワードによるアカウントログイン認証 |
+| `GET` | `/settings/users` | Settings | 登録済みユーザー一覧の取得 |
+| `POST` | `/settings/users` | Settings | 新規ユーザーの追加登録 |
+| `DELETE` | `/settings/users/{username}` | Settings | 指定したユーザーの削除 |
+| `GET` | `/settings/config` | Settings | 現在のシステム・AI設定（APIキー、モデル選択、ランク閾値、プロンプト）の取得 |
+| `POST` | `/settings/config` | Settings | システム・AI設定の更新・保存 |
 | `POST` | `/upload/` | Audio Upload | 音声ファイル (.wav / .mp3) を MinIO にアップロード |
 | `GET` | `/audio/{filename}` | Audio Stream | MinIO から音声ファイルをダウンロード / ストリーミング再生 |
 | `POST` | `/records/` | Call Records | 新しい通話レコードメタデータを登録 |
 | `GET` | `/records/` | Call Records | 通話レコード一覧（トランスクリプト・分析結果含む）を取得 |
 | `GET` | `/records/{record_id}` | Call Records | 指定IDの通話レコード詳細を取得 |
+| `DELETE` | `/records/{record_id}` | Call Records | 指定IDの通話レコードおよび関連ストレージ音声データの完全削除 |
 | `POST` | `/records/{record_id}/transcribe` | STT & Diarization | Whisper STT ＋ Pyannote話者分離 ＋ Llama3役割同定 ＋ Geminiスコアリングを一括実行 (Celery非同期) |
 | `POST` | `/records/{record_id}/summarize` | Analysis | Gemini 2.0 Flash による通話要約＆シグナル抽出 |
 | `POST` | `/records/{record_id}/score` | Analysis | Gemini Structured Output による S〜Eランクスコアリングの非同期実行 |
@@ -163,3 +170,29 @@
   - `Content-Type`: `text/csv; charset=utf-8`
   - `Content-Disposition`: `attachment; filename=record_1_report.csv`
   - **仕様**: 日本語 Excel で文字化けしないよう、レスポンス先頭に UTF-8 BOM (`\ufeff`) を付与。
+
+---
+
+### 3.8. 認証 ＆ システム環境設定 API
+
+#### ① アカウントログイン認証
+`POST /login`
+- **リクエスト**: `{ "username": "admin", "password": "telesales2026!" }`
+- **レスポンス (200 OK)**:
+  ```json
+  {
+    "access_token": "token-admin-session",
+    "token_type": "bearer",
+    "username": "admin",
+    "name": "管理者 ユーザー",
+    "role": "管理者"
+  }
+  ```
+
+#### ② システム環境・AI設定の取得 ＆ 更新
+`GET /settings/config` ｜ `POST /settings/config`
+- **概要**: Gemini / Groq / OpenRouter の API キー、ランク判定閾値 (S=90, A=70...)、およびカスタムプロンプト指示を取得・保存 (`system_config.json` へ保存)。
+
+#### ③ ユーザー管理
+`GET /settings/users` ｜ `POST /settings/users` ｜ `DELETE /settings/users/{username}`
+- **概要**: システムを利用するユーザー（管理者・マネージャー・営業担当者）の一覧取得、新規追加、および削除。

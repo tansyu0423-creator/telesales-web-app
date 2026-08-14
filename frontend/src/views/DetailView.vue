@@ -13,6 +13,64 @@ const record = ref(null)
 const loading = ref(true)
 const error = ref('')
 const isActionLoading = ref(false)
+const audioPlayerRef = ref(null)
+
+const seekAudioTo = (startTime) => {
+  if (audioPlayerRef.value && typeof audioPlayerRef.value.seekToAndPlay === 'function') {
+    audioPlayerRef.value.seekToAndPlay(startTime)
+  }
+}
+
+const getTalkRatio = (transcripts) => {
+  if (!transcripts || transcripts.length === 0) {
+    return { salesRatio: 50, customerRatio: 50, salesDuration: 0, customerDuration: 0 }
+  }
+  let salesTime = 0
+  let customerTime = 0
+  transcripts.forEach(t => {
+    const dur = Math.max(0, (t.end_time || 0) - (t.start_time || 0))
+    if (t.speaker === 'Sales') {
+      salesTime += dur
+    } else {
+      customerTime += dur
+    }
+  })
+  const total = salesTime + customerTime
+  if (total === 0) {
+    return { salesRatio: 50, customerRatio: 50, salesDuration: 0, customerDuration: 0 }
+  }
+  const salesRatio = Math.round((salesTime / total) * 100)
+  const customerRatio = 100 - salesRatio
+  return {
+    salesRatio,
+    customerRatio,
+    salesDuration: Math.round(salesTime),
+    customerDuration: Math.round(customerTime)
+  }
+}
+
+const getObjectionTags = (text, speaker) => {
+  if (speaker !== 'Customer' || !text) return []
+  const tags = []
+  const t = text.toLowerCase()
+
+  if (/高い|予算|コスト|費用|値引き|価格|金額|安く/.test(t)) {
+    tags.push({ label: '💰 価格・コスト懸念', class: 'bg-amber-950/90 text-amber-300 border-amber-700/80' })
+  }
+  if (/検討|考え|持ち帰り|後で|時期|タイミング|追って/.test(t)) {
+    tags.push({ label: '⏱ 検討・持ち帰り', class: 'bg-sky-950/90 text-sky-300 border-sky-700/80' })
+  }
+  if (/上司|役員|決裁|承認|相談|社長|部長|確認/.test(t)) {
+    tags.push({ label: '👔 決裁・社内相談', class: 'bg-purple-950/90 text-purple-300 border-purple-700/80' })
+  }
+  if (/他社|比較|既存|競合|相見積|ツール|他/.test(t)) {
+    tags.push({ label: '⚔️ 競合・他社比較', class: 'bg-orange-950/90 text-orange-300 border-orange-700/80' })
+  }
+  if (/難しい|合わない|不要|必要ない|足りない|ネック|不安/.test(t)) {
+    tags.push({ label: '⚠️ ネック・不安点', class: 'bg-rose-950/90 text-rose-300 border-rose-700/80' })
+  }
+  return tags
+}
 
 const fetchRecordDetail = async () => {
   loading.value = true
@@ -82,6 +140,22 @@ const handleExportCsv = () => {
   window.open(`http://localhost:8000/records/${recordId}/export/csv`, '_blank')
 }
 
+const handleDeleteRecord = async () => {
+  if (!confirm(`通話データ #${recordId} を完全に削除してもよろしいですか？\n※削除したデータおよび音声ファイル・AI解析結果は元に戻せません。`)) {
+    return
+  }
+  isActionLoading.value = true
+  try {
+    await api.delete(`/records/${recordId}`)
+    alert(`通話データ #${recordId} を削除しました。`)
+    router.push('/')
+  } catch (err) {
+    alert(err.response?.data?.detail || err.message || '通話データの削除に失敗しました')
+  } finally {
+    isActionLoading.value = false
+  }
+}
+
 const formatDateTime = (dateStr) => {
   if (!dateStr) return ''
   const isoStr = typeof dateStr === 'string' && !dateStr.endsWith('Z') && !dateStr.includes('+') 
@@ -149,6 +223,13 @@ onMounted(() => {
         >
           📥 CSV出力
         </button>
+        <button 
+          @click="handleDeleteRecord" 
+          class="px-3.5 py-2 bg-red-950/80 hover:bg-red-900 text-red-300 border border-red-800 rounded-xl text-xs font-bold transition-colors cursor-pointer disabled:opacity-50"
+          :disabled="isActionLoading"
+        >
+          🗑️ データ削除
+        </button>
       </div>
     </div>
 
@@ -205,7 +286,7 @@ onMounted(() => {
 
         <!-- 音声試聴プレイヤー -->
         <div v-if="record.audio_file_path" class="mt-4">
-          <CustomAudioPlayer :src="`http://localhost:8000/audio/${record.audio_file_path}`" />
+          <CustomAudioPlayer ref="audioPlayerRef" :src="`http://localhost:8000/audio/${record.audio_file_path}`" />
         </div>
       </div>
 
@@ -263,13 +344,49 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- フル対話ログ (話者識別: 営業 vs 顧客) -->
+      <!-- 対話時間割合 (Talk-to-Listen Ratio) メーターカード -->
+      <div v-if="record.transcripts && record.transcripts.length > 0" class="bg-slate-800/80 backdrop-blur-md border border-slate-700/60 rounded-2xl p-5 shadow-xl space-y-3">
+        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+          <div class="flex items-center gap-3">
+            <h3 class="text-sm font-bold text-slate-200 flex items-center gap-2">
+              <span>📊 対話割合 (Talk-to-Listen Ratio)</span>
+            </h3>
+            <span v-if="getTalkRatio(record.transcripts).salesRatio > 65" class="px-2.5 py-0.5 bg-amber-950 border border-amber-800 text-amber-300 text-xs font-bold rounded-full">
+              ⚠️ 営業話しすぎ注意 (65%超)
+            </span>
+            <span v-else-if="getTalkRatio(record.transcripts).salesRatio < 35" class="px-2.5 py-0.5 bg-sky-950 border border-sky-800 text-sky-300 text-xs font-bold rounded-full">
+              ℹ️ 顧客主導対話
+            </span>
+            <span v-else class="px-2.5 py-0.5 bg-emerald-950 border border-emerald-800 text-emerald-300 text-xs font-bold rounded-full">
+              ✨ 理想的な対話バランス (黄金比)
+            </span>
+          </div>
+
+          <div class="font-mono text-xs text-slate-300">
+            👔 営業: <strong class="text-sky-400 text-sm">{{ getTalkRatio(record.transcripts).salesRatio }}%</strong> ({{ getTalkRatio(record.transcripts).salesDuration }}秒) / 
+            👤 顧客: <strong class="text-emerald-400 text-sm">{{ getTalkRatio(record.transcripts).customerRatio }}%</strong> ({{ getTalkRatio(record.transcripts).customerDuration }}秒)
+          </div>
+        </div>
+
+        <div class="w-full h-3.5 bg-slate-950 rounded-full overflow-hidden flex border border-slate-700/80 p-0.5 shadow-inner">
+          <div 
+            class="h-full bg-gradient-to-r from-sky-500 to-blue-600 rounded-l-full transition-all duration-1000 flex items-center justify-center" 
+            :style="{ width: `${getTalkRatio(record.transcripts).salesRatio}%` }"
+          ></div>
+          <div 
+            class="h-full bg-gradient-to-r from-emerald-500 to-teal-400 rounded-r-full transition-all duration-1000 flex items-center justify-center" 
+            :style="{ width: `${getTalkRatio(record.transcripts).customerRatio}%` }"
+          ></div>
+        </div>
+      </div>
+
+      <!-- フル対話ログ (クリックで音声連動再生) -->
       <div class="bg-slate-800/80 backdrop-blur-md border border-slate-700/60 rounded-2xl p-6 shadow-xl space-y-4">
         <div class="flex justify-between items-center">
           <h3 class="text-sm font-bold text-slate-300 uppercase tracking-wider flex items-center gap-2">
             <span>💬 通話対話ログ (Pyannote 話者タイムライン)</span>
           </h3>
-          <span class="text-xs text-slate-400">全 {{ record.transcripts.length }} 発話</span>
+          <span class="text-xs text-sky-400 font-medium">💡 発話をクリックでその時間へジャンプ再生 (全 {{ record.transcripts.length }} 発話)</span>
         </div>
 
         <div v-if="record.transcripts.length === 0" class="text-center py-8 text-slate-500 text-xs italic">
@@ -280,19 +397,33 @@ onMounted(() => {
           <div 
             v-for="t in record.transcripts" 
             :key="t.id" 
+            @click="seekAudioTo(t.start_time)"
             :class="[
-              'p-4 rounded-xl text-xs border leading-relaxed transition-all',
+              'p-4 rounded-xl text-xs border leading-relaxed cursor-pointer transition-all hover:scale-[1.01] shadow-sm group',
               t.speaker === 'Sales' 
-                ? 'self-start bg-sky-950/50 border-sky-800/60 text-sky-100 max-w-[85%]' 
-                : 'self-end bg-emerald-950/50 border-emerald-800/60 text-emerald-100 max-w-[85%]'
+                ? 'self-start bg-sky-950/50 hover:bg-sky-900/70 border-sky-800/60 hover:border-sky-500 text-sky-100 max-w-[85%]' 
+                : getObjectionTags(t.text, t.speaker).length > 0
+                  ? 'self-end bg-amber-950/60 hover:bg-amber-900/80 border-amber-500/80 hover:border-amber-400 text-amber-100 max-w-[85%] ring-1 ring-amber-500/30'
+                  : 'self-end bg-emerald-950/50 hover:bg-emerald-900/70 border-emerald-800/60 hover:border-emerald-500 text-emerald-100 max-w-[85%]'
             ]"
+            title="クリックしてこの時間から音声再生"
           >
-            <div class="flex justify-between items-center text-[11px] text-slate-400 mb-1.5 gap-4">
-              <span class="font-bold text-slate-200">
-                {{ t.speaker === 'Sales' ? '👔 営業担当者' : '👤 顧客' }}
-              </span>
-              <span class="font-mono text-slate-400 bg-slate-900/80 px-2 py-0.5 rounded border border-slate-700">
-                ⏱ {{ t.start_time.toFixed(1) }}s - {{ t.end_time.toFixed(1) }}s
+            <div class="flex justify-between items-center text-[11px] text-slate-400 mb-1.5 gap-4 flex-wrap">
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class="font-bold text-slate-200">
+                  {{ t.speaker === 'Sales' ? '👔 営業担当者' : '👤 顧客' }}
+                </span>
+                <span 
+                  v-for="(tag, idx) in getObjectionTags(t.text, t.speaker)" 
+                  :key="idx"
+                  :class="['px-2 py-0.5 text-[10px] font-bold border rounded-md shadow-xs flex items-center gap-0.5', tag.class]"
+                >
+                  {{ tag.label }}
+                </span>
+              </div>
+              <span class="font-mono text-slate-400 bg-slate-900/80 px-2.5 py-1 rounded border border-slate-700 group-hover:border-sky-500 group-hover:text-sky-300 transition-colors flex items-center gap-1">
+                <span>▶ {{ t.start_time.toFixed(1) }}s</span>
+                <span>- {{ t.end_time.toFixed(1) }}s</span>
               </span>
             </div>
             <div class="text-sm text-slate-100">{{ t.text }}</div>

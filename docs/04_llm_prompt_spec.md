@@ -6,8 +6,9 @@
 | :--- | :--- | :--- | :--- |
 | **`whisper-large-v3-turbo`** | Groq Cloud | 音声認識・文字起こし (STT) | 超高速推論 (リアルタイム比10倍以上)・日本語認識精度 |
 | **`speaker-diarization-3.1`** | Pyannote / HuggingFace | 話者分離 (Speaker Diarization) | タイムスタンプ別話者セグメント抽出のデファクトスタンダード |
-| **`llama-3.3-70b-versatile`** | Groq Cloud | 話者役割判定 (Role Identification) | 構造的対話推論・超低遅延レスポンス |
-| **`gemini-2.0-flash`** | Google Cloud / Gemini API | 通話要約・シグナル抽出・見込みスコアリング | 大規模文脈受容・Native Structured Output (Pydantic連動) 強制 |
+| **`llama-3.3-70b-versatile`** | Groq Cloud | 話者役割判定 ＆ 二次フォールバック | 構造的対話推論・超低遅延レスポンス・Geminiダウン時バックアップ |
+| **`gemini-2.0-flash`** | Google Cloud / Gemini API | メインAIスコアリング (Primary) | 大規模文脈受容・Native Structured Output (Pydantic連動) |
+| **`mistral-7b-instruct`** | OpenRouter | 三次フォールバック (Tertiary) | 無料枠クォータ制限時の冗長化バックアップAPI |
 
 ---
 
@@ -86,8 +87,28 @@ Pydantic スキーマ `schemas.AnalysisResultBase` を `response_schema` に与�
 
 ---
 
-## 4. フェイルセーフ ＆ 冗長化機構 (Fallback Architecture)
-1. **Gemini API レートリミット・障害発生時**:
-   - `gemini-2.0-flash` の呼び出しで例外が発生した場合、自動的に Groq API (`llama-3.3-70b-versatile`) に切替。
-2. **話者同定エラー時**:
-   - 会話の先頭（発言者）をインサイドセールスの原則に基づき `Sales` と判定し、以降を交互・対話構造から補正するフォールバックロジックを保持。
+## 4. フェイルセーフ ＆ 多重冗長化機構 (4-Stage Fallback Architecture)
+
+AI API の利用制限（429 Too Many Requests）やサーバーダウン、ネットワーク障害に備え、4段階の自動フォールバックチェーンを実装。システム全体の無限待機やフリーズを防止。
+
+```mermaid
+graph TD
+    A[スコアリングリクエスト開始] --> B{1. Gemini 2.0 Flash}
+    B -- 成功 --> SUCCESS[分析完了 & DB保存]
+    B -- 429/エラー --> C{2. Groq Llama 3.3 70B}
+    C -- 成功 --> SUCCESS
+    C -- エラー --> D{3. OpenRouter Mistral 7B}
+    D -- 成功 --> SUCCESS
+    D -- エラー --> SAFE[4. デフォルト安全結果返却]
+    SAFE --> SAFE_RES["ランク: C, 成約率: 50%<br>関心点: API制限のため一時的に解析できません<br>推奨アクション: 時間を置いて再解析を実行してください"]
+    SAFE_RES --> SUCCESS
+```
+
+1. **第1優先 (Primary)**: `gemini-2.0-flash`
+   - Native Pydantic Structured Output により高精度・低遅延でスコアリングを実行。
+2. **第2優先 (Secondary Fallback)**: `llama-3.3-70b-versatile` (Groq API)
+   - Gemini が 429 レートリミットやダウン状態の場合、自動的に Groq API に切替。
+3. **第3優先 (Tertiary Fallback)**: `mistralai/mistral-7b-instruct:free` (OpenRouter API)
+   - Groq API も制限に達した場合、httpx 同期クライアント経由で OpenRouter 無料枠モデルを呼び出し。
+4. **第4優先 (Quaternary / Safe Default Return)**: 安全なデフォルト値返却
+   - すべての外部 AI API が停止した場合でもシステムは応答を止めず、ランク `C`（成約率 `50%`）、`customer_interest="API制限のため一時的に解析できません"`、`recommended_action="APIの利用制限（429）または通信エラーが発生しました。時間を置いて再解析を実行してください。"` という安全な例外結果オブジェクトを生成して正常終了する。
