@@ -170,10 +170,33 @@ const handleTriggerRefresh = () => {
   fetchRecords()
 }
 
+const pollTaskStatus = async (taskId) => {
+  return new Promise((resolve, reject) => {
+    const interval = setInterval(async () => {
+      try {
+        const res = await api.get(`/tasks/${taskId}`)
+        if (res.data.status === 'SUCCESS') {
+          clearInterval(interval)
+          resolve(res.data.result)
+        } else if (res.data.status === 'FAILURE') {
+          clearInterval(interval)
+          reject(new Error(res.data.error || 'タスク処理に失敗しました'))
+        }
+      } catch (err) {
+        clearInterval(interval)
+        reject(err)
+      }
+    }, 2000)
+  })
+}
+
 const handleAnalyze = async (recordId) => {
   actionLoading.value[`${recordId}_analyze`] = true
   try {
-    await api.post(`/records/${recordId}/analyze`)
+    const res = await api.post(`/records/${recordId}/score`)
+    if (res.data.task_id) {
+      await pollTaskStatus(res.data.task_id)
+    }
     await fetchRecords()
   } catch (err) {
     alert('AI解析の実行に失敗しました: ' + (err.response?.data?.detail || err.message))
@@ -183,7 +206,7 @@ const handleAnalyze = async (recordId) => {
 }
 
 const handleExportCsv = (recordId) => {
-  window.open(`http://localhost:8000/api/records/${recordId}/export/csv`, '_blank')
+  window.open(`http://localhost:8000/records/${recordId}/export/csv`, '_blank')
 }
 
 const handleDeleteRecord = async (recordId) => {
@@ -405,6 +428,42 @@ const handleScrollGaugeCheck = () => {
 watch(filteredRecords, () => {
   handleScrollGaugeCheck()
 }, { deep: true, immediate: true })
+
+const getRepairedTranscripts = (transcripts) => {
+  if (!transcripts || transcripts.length === 0) return []
+  const result = JSON.parse(JSON.stringify(transcripts))
+  
+  const splitRules = [
+    { prefix: "ご懸", suffix: "念", fullWord: "ご懸念" },
+    { prefix: "ご関", suffix: "心", fullWord: "ご関心" },
+    { prefix: "ご確", suffix: "認", fullWord: "ご確認" },
+    { prefix: "ご対", suffix: "応", fullWord: "ご対応" },
+    { prefix: "お問", suffix: "い合わせ", fullWord: "お問い合わせ" },
+    { prefix: "お問", suffix: "合せ", fullWord: "お問い合わせ" },
+    { prefix: "お世", suffix: "話", fullWord: "お世話" },
+    { prefix: "ありが", suffix: "とう", fullWord: "ありがとう" }
+  ]
+  
+  for (let i = 0; i < result.length - 1; i++) {
+    const textCurr = (result[i].text || "").replace(/[。、 　]+$/, "")
+    const textNext = (result[i + 1].text || "").replace(/^[。、 　]+/, "")
+    
+    for (const rule of splitRules) {
+      if (textCurr.endsWith(rule.prefix) && textNext.startsWith(rule.suffix)) {
+        let cleanedCurr = textCurr.slice(0, -rule.prefix.length).replace(/[。、 　]+$/, "")
+        if (!/[。！？!?]$/.test(cleanedCurr)) {
+          cleanedCurr += "。"
+        }
+        result[i].text = cleanedCurr
+        
+        const cleanedNext = textNext.slice(rule.suffix.length).replace(/^[。、 　]+/, "")
+        result[i + 1].text = rule.fullWord + cleanedNext
+        break
+      }
+    }
+  }
+  return result
+}
 
 onMounted(() => {
   fetchRecords()
@@ -949,7 +1008,7 @@ onUnmounted(() => {
                       </div>
                       <div v-else class="flex flex-col gap-2.5 max-h-80 overflow-y-auto pr-2 w-full">
                         <div 
-                          v-for="t in record.transcripts" 
+                          v-for="t in getRepairedTranscripts(record.transcripts)" 
                           :key="t.id" 
                           @click="seekAudioTo(record.id, t.start_time)"
                           :class="[
@@ -1187,7 +1246,7 @@ onUnmounted(() => {
               </div>
               <div v-else class="flex flex-col gap-2 max-h-72 overflow-y-auto pr-1 w-full">
                 <div 
-                  v-for="t in record.transcripts" 
+                  v-for="t in getRepairedTranscripts(record.transcripts)" 
                   :key="t.id" 
                   @click="seekAudioTo(record.id, t.start_time)"
                   :class="[
