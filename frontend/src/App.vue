@@ -2,7 +2,7 @@
   <div class="min-h-screen bg-slate-950 text-slate-100 font-sans">
     <!-- ヘッダー（ログイン画面以外、かつログイン時のみ表示） -->
     <header v-if="showNavigation" class="bg-slate-900/90 backdrop-blur-md shadow-md border-b border-slate-800 sticky top-0 z-40">
-      <div class="w-full px-4 sm:px-6 lg:px-8">
+      <div class="w-full max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8">
         <div class="flex justify-between items-center h-16">
           
           <!-- ブランドロゴ ＆ ナビゲーションリンク -->
@@ -75,7 +75,7 @@
     </header>
 
     <!-- メインコンテンツ -->
-    <main :class="['w-full', showNavigation ? 'px-4 sm:px-6 lg:px-8 py-6' : 'p-0']">
+    <main :class="['w-full max-w-[1600px] mx-auto', showNavigation ? 'px-4 sm:px-6 lg:px-8 py-6' : 'p-0']">
       <RouterView />
     </main>
   </div>
@@ -119,5 +119,5 @@ onUnmounted(() => {
 const handleLogout = () => {
   authStore.logout()
   router.push('/login')
-}
+})
 </script>

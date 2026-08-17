@@ -1,34 +1,34 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue'
-import axios from 'axios'
+import api from '../services/api'
+import CircularProgressGauge from '../components/CircularProgressGauge.vue'
 import CustomAudioPlayer from '../components/CustomAudioPlayer.vue'
-
-const api = axios.create({
-  baseURL: 'http://localhost:8000'
-})
 
 const records = ref([])
 const loading = ref(true)
-const isRefreshing = ref(false)
-const selectedRank = ref('ALL')
-const expandedRecordIds = ref(new Set())
 const actionLoading = ref({})
+const isRefreshing = ref(false)
 
-const toggleRecordDetail = (id) => {
-  if (expandedRecordIds.value.has(id)) {
-    expandedRecordIds.value.delete(id)
-  } else {
-    expandedRecordIds.value.add(id)
-  }
-}
-
-const isRecordDetailOpen = (id) => expandedRecordIds.value.has(id)
-
+const openRecordIds = ref([])
 const audioPlayerRefs = ref({})
+const searchQuery = ref('')
+const selectedRank = ref('ALL')
+const sortBy = ref('date_desc')
+const viewMode = ref('table')
+const activeTab = ref('records')
+const repSortBy = ref('high_prospect')
+const selectedSalesRep = ref(null)
 
-const setAudioPlayerRef = (recordId, el) => {
+const gaugeValueMap = ref({})
+const gaugeAnimatedMap = ref({})
+
+const confettiParticles = ref([])
+
+const setAudioPlayerRef = (id, el) => {
   if (el) {
-    audioPlayerRefs.value[recordId] = el
+    audioPlayerRefs.value[id] = el
+  } else {
+    delete audioPlayerRefs.value[id]
   }
 }
 
@@ -37,6 +37,50 @@ const seekAudioTo = (recordId, startTime) => {
   if (player && typeof player.seekToAndPlay === 'function') {
     player.seekToAndPlay(startTime)
   }
+}
+
+const toggleRecordDetail = (id) => {
+  const index = openRecordIds.value.indexOf(id)
+  if (index === -1) {
+    openRecordIds.value.push(id)
+  } else {
+    openRecordIds.value.splice(index, 1)
+  }
+}
+
+const isRecordDetailOpen = (id) => {
+  return openRecordIds.value.includes(id)
+}
+
+const getRankLabel = (rank) => {
+  const labels = {
+    'S': '非常に有望',
+    'A': '有望',
+    'B': '検討中',
+    'C': '観察',
+    'D': '低可能性',
+    'E': '不可行'
+  }
+  return labels[rank] || '未知'
+}
+
+const getRankBadgeClass = (rank) => {
+  const classes = {
+    'S': 'bg-purple-950/90 text-purple-300 border border-purple-700/80 shadow-purple-900/20',
+    'A': 'bg-green-950/90 text-green-300 border border-green-700/80 shadow-green-900/20',
+    'B': 'bg-blue-950/90 text-blue-300 border border-blue-700/80 shadow-blue-900/20',
+    'C': 'bg-yellow-950/90 text-yellow-300 border border-yellow-700/80 shadow-yellow-900/20',
+    'D': 'bg-orange-950/90 text-orange-300 border border-orange-700/80 shadow-orange-900/20',
+    'E': 'bg-red-950/90 text-red-300 border border-red-700/80 shadow-red-900/20'
+  }
+  return classes[rank] || 'bg-slate-800 text-slate-300 border border-slate-700'
+}
+
+const getRankFilterButtonClass = (rank, isSelected) => {
+  if (isSelected) {
+    return 'bg-sky-500 text-slate-950 border-sky-400 font-extrabold shadow-md shadow-sky-500/20'
+  }
+  return 'bg-slate-900/80 text-slate-300 border-slate-700 hover:border-slate-500 hover:text-white'
 }
 
 const getTalkRatio = (transcripts) => {
@@ -90,24 +134,31 @@ const getObjectionTags = (text, speaker) => {
   return tags
 }
 
-const expandAllDetails = () => {
-  filteredRecords.value.forEach(r => expandedRecordIds.value.add(r.id))
-}
-
-const collapseAllDetails = () => {
-  expandedRecordIds.value.clear()
+const formatDateTime = (isoString) => {
+  if (!isoString) return '-'
+  try {
+    const fixedIso = isoString.endsWith('Z') || isoString.includes('+') ? isoString : isoString + 'Z'
+    const date = new Date(fixedIso)
+    return date.toLocaleString('ja-JP', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    })
+  } catch (e) {
+    return isoString
+  }
 }
 
 const fetchRecords = async () => {
-  if (records.value.length === 0) {
-    loading.value = true
-  }
   isRefreshing.value = true
   try {
     const res = await api.get('/records/')
     records.value = res.data
   } catch (err) {
-    console.error('Fetch records error:', err)
+    console.error('通話一覧取得エラー:', err)
   } finally {
     loading.value = false
     isRefreshing.value = false
@@ -115,11 +166,87 @@ const fetchRecords = async () => {
   }
 }
 
-const searchQuery = ref('')
-const sortBy = ref('date_desc')
-const activeTab = ref('records') // 'records' | 'analytics'
-const selectedSalesRep = ref('')
-const viewMode = ref('table') // 'table' | 'card'
+const handleTriggerRefresh = () => {
+  fetchRecords()
+}
+
+const handleAnalyze = async (recordId) => {
+  actionLoading.value[`${recordId}_analyze`] = true
+  try {
+    await api.post(`/records/${recordId}/analyze`)
+    await fetchRecords()
+  } catch (err) {
+    alert('AI解析の実行に失敗しました: ' + (err.response?.data?.detail || err.message))
+  } finally {
+    actionLoading.value[`${recordId}_analyze`] = false
+  }
+}
+
+const handleExportCsv = (recordId) => {
+  window.open(`http://localhost:8000/api/records/${recordId}/export/csv`, '_blank')
+}
+
+const handleDeleteRecord = async (recordId) => {
+  if (!confirm(`通話ID #${recordId} のデータを完全に削除しますか？`)) return
+  actionLoading.value[`${recordId}_delete`] = true
+  try {
+    await api.delete(`/records/${recordId}`)
+    await fetchRecords()
+  } catch (err) {
+    alert('削除に失敗しました: ' + (err.response?.data?.detail || err.message))
+  } finally {
+    actionLoading.value[`${recordId}_delete`] = false
+  }
+}
+
+const filterBySalesRep = (repCode) => {
+  selectedSalesRep.value = repCode
+  activeTab.value = 'records'
+}
+
+const clearSalesRepFilter = () => {
+  selectedSalesRep.value = null
+}
+
+const filteredRecords = computed(() => {
+  let result = [...records.value]
+
+  if (selectedSalesRep.value) {
+    result = result.filter(r => r.sales_code === selectedSalesRep.value)
+  }
+
+  if (searchQuery.value.trim()) {
+    const q = searchQuery.value.trim().toLowerCase()
+    result = result.filter(r => 
+      r.sales_code?.toLowerCase().includes(q) ||
+      r.customer_phone?.toLowerCase().includes(q)
+    )
+  }
+
+  if (selectedRank.value !== 'ALL') {
+    result = result.filter(r => r.analysis && r.analysis.rank === selectedRank.value)
+  }
+
+  result.sort((a, b) => {
+    if (sortBy.value === 'date_desc') {
+      return new Date(b.created_at || 0) - new Date(a.created_at || 0)
+    } else if (sortBy.value === 'date_asc') {
+      return new Date(a.created_at || 0) - new Date(b.created_at || 0)
+    } else if (sortBy.value === 'prob_desc') {
+      const probA = a.analysis?.purchase_probability || 0
+      const probB = b.analysis?.purchase_probability || 0
+      return probB - probA
+    } else if (sortBy.value === 'rank_asc') {
+      const rankOrder = { 'S': 1, 'A': 2, 'B': 3, 'C': 4, 'D': 5, 'E': 6 }
+      const orderA = rankOrder[a.analysis?.rank] || 99
+      const orderB = rankOrder[b.analysis?.rank] || 99
+      return orderA - orderB
+    }
+    return 0
+  })
+
+  return result
+})
 
 const kpiStats = computed(() => {
   const total = records.value.length
@@ -127,375 +254,163 @@ const kpiStats = computed(() => {
     return { total: 0, highProspectCount: 0, avgProbability: 0, analysisRate: 0 }
   }
 
-  const analyzed = records.value.filter(r => r.analysis)
-  const highProspectCount = analyzed.filter(r => r.analysis.rank === 'S' || r.analysis.rank === 'A').length
-  const probSum = analyzed.reduce((sum, r) => sum + (r.analysis.purchase_probability || 0), 0)
-  const avgProbability = analyzed.length > 0 ? Math.round(probSum / analyzed.length) : 0
-  const analysisRate = Math.round((analyzed.length / total) * 100)
-
-  return { total, highProspectCount, avgProbability, analysisRate }
-})
-
-const repSortBy = ref('high_prospect') // 'high_prospect' | 'weighted' | 'avg_prob' | 'calls'
-
-const getConfettiParticles = (rankIndex) => {
-  if (rankIndex > 2) return []
-  const palettes = {
-    0: ['#fbbf24', '#f59e0b', '#fef08a', '#d97706', '#ffe4e6'], // 1位: 金色ゴールド
-    1: ['#f8fafc', '#e2e8f0', '#cbd5e1', '#94a3b8', '#38bdf8'], // 2位: 銀色シルバー
-    2: ['#f59e0b', '#d97706', '#b45309', '#78350f', '#fef3c7']  // 3位: 銅色ブロンズ
-  }
-  const colors = palettes[rankIndex]
-  return Array.from({ length: 12 }).map((_, i) => ({
-    id: i,
-    left: `${(i * 8 + 4) % 90 + 4}%`,
-    delay: `${(i * 0.35).toFixed(2)}s`,
-    duration: `${(2.6 + (i % 4) * 0.7).toFixed(2)}s`,
-    size: `${(4 + (i % 3) * 3)}px`,
-    color: colors[i % colors.length],
-    rotation: `${(i * 30) % 360}deg`,
-    isCircle: i % 2 === 0
-  }))
-}
-
-// 営業担当者別の平均成約率・ランク獲得数集計
-const salesRepStats = computed(() => {
-  const map = {}
-  const globalAvg = kpiStats.value.avgProbability || 50
-  const priorWeight = 3
+  let highProspectCount = 0
+  let totalProb = 0
+  let analyzedCount = 0
 
   records.value.forEach(r => {
-    const code = r.sales_code || '未設定'
-    if (!map[code]) {
-      map[code] = {
+    if (r.analysis) {
+      analyzedCount++
+      const prob = r.analysis.purchase_probability || 0
+      totalProb += prob
+      if (r.analysis.rank === 'S' || r.analysis.rank === 'A') {
+        highProspectCount++
+      }
+    }
+  })
+
+  const avgProbability = analyzedCount > 0 ? Math.round(totalProb / analyzedCount) : 0
+  const analysisRate = Math.round((analyzedCount / total) * 100)
+
+  return {
+    total,
+    highProspectCount,
+    avgProbability,
+    analysisRate
+  }
+})
+
+const salesRepStats = computed(() => {
+  const repMap = {}
+
+  records.value.forEach(r => {
+    const code = r.sales_code || '不明'
+    if (!repMap[code]) {
+      repMap[code] = {
         code,
         totalCalls: 0,
-        analyzedCalls: 0,
         highProspectCount: 0,
-        probSum: 0,
+        totalProbability: 0,
+        analyzedCount: 0,
         rankCounts: { S: 0, A: 0, B: 0, C: 0, D: 0, E: 0 }
       }
     }
 
-    map[code].totalCalls += 1
-
+    repMap[code].totalCalls++
     if (r.analysis) {
-      map[code].analyzedCalls += 1
-      map[code].probSum += (r.analysis.purchase_probability || 0)
+      repMap[code].analyzedCount++
+      const prob = r.analysis.purchase_probability || 0
+      repMap[code].totalProbability += prob
       const rank = r.analysis.rank
-      if (rank === 'S' || rank === 'A') {
-        map[code].highProspectCount += 1
+      if (repMap[code].rankCounts[rank] !== undefined) {
+        repMap[code].rankCounts[rank]++
       }
-      if (map[code].rankCounts[rank] !== undefined) {
-        map[code].rankCounts[rank] += 1
+      if (rank === 'S' || rank === 'A') {
+        repMap[code].highProspectCount++
       }
     }
   })
 
-  return Object.values(map).map(item => {
-    const avgProbability = item.analyzedCalls > 0 ? Math.round(item.probSum / item.analyzedCalls) : 0
-    const weightedScore = item.analyzedCalls > 0 
-      ? Math.round((priorWeight * globalAvg + item.probSum) / (priorWeight + item.analyzedCalls)) 
-      : 0
+  const list = Object.values(repMap).map(rep => {
+    const avgProbability = rep.analyzedCount > 0 ? Math.round(rep.totalProbability / rep.analyzedCount) : 0
+    const weightedScore = (rep.highProspectCount * 25) + (avgProbability * 0.5) + (rep.totalCalls * 2)
     return {
-      ...item,
+      ...rep,
       avgProbability,
       weightedScore
     }
-  }).sort((a, b) => {
-    if (repSortBy.value === 'high_prospect') {
-      return (b.highProspectCount - a.highProspectCount) || (b.avgProbability - a.avgProbability) || (b.totalCalls - a.totalCalls)
-    } else if (repSortBy.value === 'weighted') {
-      return (b.weightedScore - a.weightedScore) || (b.totalCalls - a.totalCalls)
-    } else if (repSortBy.value === 'calls') {
-      return (b.totalCalls - a.totalCalls) || (b.avgProbability - a.avgProbability)
-    } else {
-      // avg_prob
-      return (b.avgProbability - a.avgProbability) || (b.totalCalls - a.totalCalls)
-    }
   })
-})
 
-const filterBySalesRep = (code) => {
-  selectedSalesRep.value = code
-  activeTab.value = 'records'
-}
-
-const clearSalesRepFilter = () => {
-  selectedSalesRep.value = ''
-}
-
-const filteredRecords = computed(() => {
-  let list = [...records.value]
-
-  // 1. 担当者絞り込み
-  if (selectedSalesRep.value) {
-    list = list.filter(r => r.sales_code === selectedSalesRep.value)
-  }
-
-  // 2. ランクフィルター
-  if (selectedRank.value !== 'ALL') {
-    list = list.filter(r => r.analysis && r.analysis.rank === selectedRank.value)
-  }
-
-  // 3. キーワード検索（営業コード・顧客電話番号）
-  if (searchQuery.value.trim()) {
-    const q = searchQuery.value.trim().toLowerCase()
-    list = list.filter(r => 
-      (r.sales_code && r.sales_code.toLowerCase().includes(q)) ||
-      (r.customer_phone && r.customer_phone.toLowerCase().includes(q))
-    )
-  }
-
-  // 4. ソート順
-  if (sortBy.value === 'date_desc') {
-    list.sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-  } else if (sortBy.value === 'date_asc') {
-    list.sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
-  } else if (sortBy.value === 'prob_desc') {
-    list.sort((a, b) => ((b.analysis?.purchase_probability || 0) - (a.analysis?.purchase_probability || 0)))
-  } else if (sortBy.value === 'rank_asc') {
-    const rankOrder = { S: 1, A: 2, B: 3, C: 4, D: 5, E: 6 }
-    list.sort((a, b) => (rankOrder[a.analysis?.rank] || 99) - (rankOrder[b.analysis?.rank] || 99))
-  }
+  list.sort((a, b) => {
+    if (repSortBy.value === 'high_prospect') {
+      if (b.highProspectCount !== a.highProspectCount) return b.highProspectCount - a.highProspectCount
+      return b.avgProbability - a.avgProbability
+    } else if (repSortBy.value === 'weighted') {
+      return b.weightedScore - a.weightedScore
+    } else if (repSortBy.value === 'avg_prob') {
+      return b.avgProbability - a.avgProbability
+    } else if (repSortBy.value === 'calls') {
+      return b.totalCalls - a.totalCalls
+    }
+    return 0
+  })
 
   return list
 })
 
-const pollTaskStatus = async (taskId) => {
-  return new Promise((resolve, reject) => {
-    const interval = setInterval(async () => {
-      try {
-        const res = await api.get(`/tasks/${taskId}`)
-        if (res.data.status === 'SUCCESS') {
-          clearInterval(interval)
-          resolve(res.data.result)
-        } else if (res.data.status === 'FAILURE') {
-          clearInterval(interval)
-          reject(new Error(res.data.error || 'バックグラウンド処理に失敗しました'))
-        }
-      } catch (err) {
-        clearInterval(interval)
-        reject(err)
-      }
-    }, 2000)
-  })
-}
-
-const handleTranscribe = async (recordId) => {
-  actionLoading.value[`${recordId}_transcribe`] = true
-  try {
-    const res = await api.post(`/records/${recordId}/transcribe`)
-    if (res.data.task_id) {
-      await pollTaskStatus(res.data.task_id)
-    }
-    await fetchRecords()
-  } catch (err) {
-    const msg = err.response?.data?.detail || err.message || '文字起こしに失敗しました'
-    alert(msg)
-  } finally {
-    actionLoading.value[`${recordId}_transcribe`] = false
+const getConfettiParticles = (rankIndex) => {
+  const colors = {
+    0: ['#fbbf24', '#f59e0b', '#d97706', '#fef08a', '#ffffff'],
+    1: ['#e2e8f0', '#94a3b8', '#cbd5e1', '#f8fafc', '#38bdf8'],
+    2: ['#b45309', '#d97706', '#f59e0b', '#78350f', '#fef08a']
   }
-}
+  const selectedColors = colors[rankIndex] || colors[0]
 
-const handleAnalyze = async (recordId) => {
-  actionLoading.value[`${recordId}_analyze`] = true
-  try {
-    const res = await api.post(`/records/${recordId}/score`)
-    if (res.data.task_id) {
-      await pollTaskStatus(res.data.task_id)
-    }
-    await fetchRecords()
-  } catch (err) {
-    const msg = err.response?.data?.detail || err.message || 'AI分析に失敗しました。先に文字起こしを実行してください。'
-    alert(msg)
-  } finally {
-    actionLoading.value[`${recordId}_analyze`] = false
+  const particles = []
+  for (let i = 0; i < 18; i++) {
+    particles.push({
+      id: i,
+      left: `${(i * 5.8) + (Math.sin(i) * 2)}%`,
+      size: `${6 + (i % 5)}px`,
+      color: selectedColors[i % selectedColors.length],
+      isCircle: i % 2 === 0,
+      delay: `${(i * 0.25).toFixed(2)}s`,
+      duration: `${3.5 + (i % 3) * 0.8}s`,
+      rotation: `${(i * 45)}deg`
+    })
   }
+  return particles
 }
 
-const handleExportCsv = (recordId) => {
-  window.open(`http://localhost:8000/records/${recordId}/export/csv`, '_blank')
-}
+const animateGaugeValue = (key, targetValue) => {
+  if (gaugeAnimatedMap.value[key]) return
+  gaugeAnimatedMap.value[key] = true
 
-const handleDeleteRecord = async (recordId) => {
-  if (!confirm(`通話データ #${recordId} を削除してもよろしいですか？\n※削除したデータおよび関連音声・AI解析結果は元に戻せません。`)) {
-    return
-  }
-  actionLoading.value[`${recordId}_delete`] = true
+  let current = 0
+  const duration = 2400
+  const stepTime = 30
+  const totalSteps = duration / stepTime
+  const increment = targetValue / totalSteps
 
-  try {
-    // 1. バックエンドでDB・ストレージからの完全削除を実行
-    await api.delete(`/records/${recordId}`)
-
-    // 2. 削除成功後、フロントエンドの表示一覧から取り除く
-    records.value = records.value.filter(r => r.id !== recordId)
-    if (openRecordDetails.value[recordId]) {
-      delete openRecordDetails.value[recordId]
-    }
-  } catch (err) {
-    if (err.response?.status === 404) {
-      records.value = records.value.filter(r => r.id !== recordId)
+  const timer = setInterval(() => {
+    current += increment
+    if (current >= targetValue) {
+      gaugeValueMap.value[key] = targetValue
+      clearInterval(timer)
     } else {
-      alert(err.response?.data?.detail || err.message || '通話データの削除に失敗しました。')
-      await fetchRecords()
+      gaugeValueMap.value[key] = Math.round(current)
     }
-  } finally {
-    actionLoading.value[`${recordId}_delete`] = false
-  }
-}
-
-const formatDateTime = (dateStr) => {
-  if (!dateStr) return ''
-  // DBのUTC日時文字列に'Z'を自動付与して日本時間 (JST / UTC+9) へ正確に変換
-  const isoStr = typeof dateStr === 'string' && !dateStr.endsWith('Z') && !dateStr.includes('+') 
-    ? `${dateStr}Z` 
-    : dateStr
-  return new Date(isoStr).toLocaleString('ja-JP', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit'
-  })
-}
-
-const getRankLabel = (rank) => {
-  switch (rank) {
-    case 'S': return '非常に有望'
-    case 'A': return '有望'
-    case 'B': return '検討中'
-    case 'C': return '観察'
-    case 'D': return '低可能性'
-    case 'E': return '不可行'
-    default: return ''
-  }
-}
-
-const getRankBadgeClass = (rank) => {
-  switch (rank) {
-    case 'S': return 'bg-purple-600 text-white'
-    case 'A': return 'bg-green-600 text-white'
-    case 'B': return 'bg-blue-600 text-white'
-    case 'C': return 'bg-yellow-500 text-slate-900'
-    case 'D': return 'bg-orange-500 text-white'
-    case 'E': return 'bg-red-600 text-white'
-    default: return 'bg-slate-600 text-slate-200'
-  }
-}
-
-const getRankFilterButtonClass = (rank, isSelected) => {
-  if (rank === 'ALL') {
-    return isSelected
-      ? 'bg-sky-500 text-slate-950 border-sky-400 font-bold shadow-md shadow-sky-500/20'
-      : 'bg-slate-900/60 text-slate-400 border-slate-700 hover:border-slate-500 hover:text-slate-200'
-  }
-  
-  if (isSelected) {
-    switch (rank) {
-      case 'S': return 'bg-purple-600 text-white border-purple-400 font-bold shadow-md shadow-purple-600/40 ring-2 ring-purple-400/50'
-      case 'A': return 'bg-emerald-600 text-white border-emerald-400 font-bold shadow-md shadow-emerald-600/40 ring-2 ring-emerald-400/50'
-      case 'B': return 'bg-sky-600 text-white border-sky-400 font-bold shadow-md shadow-sky-600/40 ring-2 ring-sky-400/50'
-      case 'C': return 'bg-yellow-500 text-slate-950 border-yellow-300 font-bold shadow-md shadow-yellow-500/40 ring-2 ring-yellow-300/50'
-      case 'D': return 'bg-orange-600 text-white border-orange-400 font-bold shadow-md shadow-orange-600/40 ring-2 ring-orange-400/50'
-      case 'E': return 'bg-red-600 text-white border-red-400 font-bold shadow-md shadow-red-600/40 ring-2 ring-red-400/50'
-      default: return 'bg-sky-500 text-slate-950 border-sky-400'
-    }
-  } else {
-    switch (rank) {
-      case 'S': return 'bg-purple-950/70 text-purple-300 border-purple-800/80 hover:bg-purple-900/80 hover:text-purple-100 hover:border-purple-600'
-      case 'A': return 'bg-emerald-950/70 text-emerald-300 border-emerald-800/80 hover:bg-emerald-900/80 hover:text-emerald-100 hover:border-emerald-600'
-      case 'B': return 'bg-sky-950/70 text-sky-300 border-sky-800/80 hover:bg-sky-900/80 hover:text-sky-100 hover:border-sky-600'
-      case 'C': return 'bg-yellow-950/70 text-yellow-300 border-yellow-800/80 hover:bg-yellow-900/80 hover:text-yellow-100 hover:border-yellow-600'
-      case 'D': return 'bg-orange-950/70 text-orange-300 border-orange-800/80 hover:bg-orange-900/80 hover:text-orange-100 hover:border-orange-600'
-      case 'E': return 'bg-red-950/70 text-red-300 border-red-800/80 hover:bg-red-900/80 hover:text-red-100 hover:border-red-600'
-      default: return 'bg-slate-900/60 text-slate-400 border-slate-700'
-    }
-  }
-}
-
-const gaugeAnimatedMap = ref({})
-const gaugeValueMap = ref({})
-const activeAnimationFrames = {}
-
-const animateCountUp = (id, targetProbability) => {
-  if (activeAnimationFrames[id]) {
-    cancelAnimationFrame(activeAnimationFrames[id])
-  }
-
-  const duration = 3800 // 3.8秒でゆっくり優雅にアニメーション
-  const startTime = performance.now()
-  const target = Math.max(0, Math.min(100, Math.round(targetProbability || 0)))
-
-  const step = (now) => {
-    const elapsed = now - startTime
-    const progress = Math.min(elapsed / duration, 1)
-    
-    // SVGリングの cubic-bezier(0.16, 1, 0.3, 1) イージングと同期
-    const easeProgress = 1 - Math.pow(1 - progress, 3)
-    gaugeValueMap.value[id] = Math.round(easeProgress * target)
-
-    if (progress < 1) {
-      activeAnimationFrames[id] = requestAnimationFrame(step)
-    } else {
-      delete activeAnimationFrames[id]
-    }
-  }
-
-  activeAnimationFrames[id] = requestAnimationFrame(step)
+  }, stepTime)
 }
 
 const handleScrollGaugeCheck = () => {
-  const elements = document.querySelectorAll('[data-gauge-id]')
-  const windowHeight = window.innerHeight || document.documentElement.clientHeight
+  nextTick(() => {
+    const gaugeElements = document.querySelectorAll('[data-gauge-id]')
+    const windowHeight = window.innerHeight
 
-  elements.forEach((el) => {
-    const id = el.getAttribute('data-gauge-id')
-    const probAttr = el.getAttribute('data-probability')
-    if (!id) return
-
-    const rect = el.getBoundingClientRect()
-    // 画面視野内（最下部の要素まで正確に検出）に入ったか判定
-    const isVisible = rect.top <= windowHeight && rect.bottom >= 0
-
-    if (isVisible) {
-      // 画面内に進入した時、未アニメーションなら発火
-      if (!gaugeAnimatedMap.value[id]) {
-        gaugeAnimatedMap.value[id] = true
-        const prob = parseFloat(probAttr || '0')
-        animateCountUp(id, prob)
-      }
-    } else {
-      // 画面外へ出た時、状態をリセット（再度画面内に入った時に再発火）
-      if (gaugeAnimatedMap.value[id]) {
-        gaugeAnimatedMap.value[id] = false
-        gaugeValueMap.value[id] = 0
-        if (activeAnimationFrames[id]) {
-          cancelAnimationFrame(activeAnimationFrames[id])
-          delete activeAnimationFrames[id]
+    gaugeElements.forEach(el => {
+      const rect = el.getBoundingClientRect()
+      if (rect.top <= windowHeight * 0.95 && rect.bottom >= 0) {
+        const id = el.getAttribute('data-gauge-id')
+        const prob = parseInt(el.getAttribute('data-probability') || '0', 10)
+        if (id) {
+          animateGaugeValue(id, prob)
+          animateGaugeValue(`t-${id}`, prob)
         }
       }
-    }
+    })
   })
 }
 
-watch([filteredRecords, viewMode], () => {
-  nextTick(() => {
-    handleScrollGaugeCheck()
-  })
-}, { deep: true })
-
-const handleTriggerRefresh = () => {
-  fetchRecords()
-}
+watch(filteredRecords, () => {
+  handleScrollGaugeCheck()
+}, { deep: true, immediate: true })
 
 onMounted(() => {
   fetchRecords()
   window.addEventListener('trigger-dashboard-refresh', handleTriggerRefresh)
-  window.addEventListener('scroll', handleScrollGaugeCheck, { passive: true, capture: true })
-  window.addEventListener('resize', handleScrollGaugeCheck, { passive: true })
-  setTimeout(handleScrollGaugeCheck, 200)
-  setTimeout(handleScrollGaugeCheck, 500)
+  window.addEventListener('scroll', handleScrollGaugeCheck, { capture: true })
+  window.addEventListener('resize', handleScrollGaugeCheck)
 })
 
 onUnmounted(() => {
@@ -506,8 +421,8 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <!-- テレセールス・アナリティクス・メインダッシュボード (全画面フルレスポンシブ) -->
-  <div class="w-full px-2 sm:px-4 py-4 text-slate-100 bg-slate-950 rounded-2xl border border-slate-800 shadow-2xl">
+  <!-- テレセールス・アナリティクス・メインダッシュボード (全画面フルレスポンシブ 1600px) -->
+  <div class="w-full max-w-[1600px] mx-auto px-2 sm:px-4 py-4 text-slate-100 bg-slate-950 rounded-2xl border border-slate-800 shadow-2xl">
     <!-- エグゼクティブ・ヘッダーバナー (視認性向上 ＆ ダークグラスカード) -->
     <header class="bg-gradient-to-r from-slate-900/95 via-slate-800/95 to-slate-900/95 border border-slate-700/80 rounded-2xl p-5 shadow-2xl backdrop-blur-md mb-6">
       <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -814,8 +729,7 @@ onUnmounted(() => {
         該当する通話データが存在しません。
       </div>
 
-      <!-- 1. テーブル（表 `<table>`）形式表示 (viewMode === 'table')            -->
-      <!-- 【全ウィンドウサイズ対応】table-fixed w-full によりどんなウィンドウ幅にも全自動伸縮フィット -->
+      <!-- 1. テーブル（表 `<table>`）形式表示 (viewMode === 'table') -->
       <div v-else-if="viewMode === 'table'" class="w-full rounded-2xl border border-slate-700/60 bg-slate-800/80 backdrop-blur-sm shadow-xl overflow-hidden">
         <table class="w-full text-left text-xs border-collapse table-fixed">
           <thead>
@@ -877,26 +791,24 @@ onUnmounted(() => {
                   <span v-if="record.analysis" :class="['px-1.5 py-0.5 rounded text-[10px] sm:text-xs font-black inline-block shadow-sm truncate max-w-full', getRankBadgeClass(record.analysis.rank)]">
                     {{ record.analysis.rank }}：{{ getRankLabel(record.analysis.rank) }}
                   </span>
-                  <span v-else class="px-1.5 py-0.5 rounded text-[10px] bg-slate-700 text-slate-400">
-                    未分析
-                  </span>
+                  <span v-else class="text-slate-500 text-[11px] italic">未解析</span>
                 </td>
-                <!-- 成約率 (円形アニメーションゲージ 48px) -->
+                <!-- 成約率ゲージ -->
                 <td class="py-2.5 px-1 sm:px-2 text-center">
-                  <div v-if="record.analysis" class="flex items-center justify-center">
+                  <div v-if="record.analysis" class="flex justify-center">
                     <div 
-                      :data-gauge-id="`t-${record.id}`"
+                      :data-gauge-id="record.id"
                       :data-probability="record.analysis.purchase_probability"
-                      class="relative flex items-center justify-center w-[48px] h-[48px] shrink-0 bg-slate-950 rounded-full border border-slate-800 p-0.5 shadow-md"
+                      class="relative flex items-center justify-center w-[36px] h-[36px] bg-slate-950 rounded-full border border-slate-800 p-0.5 shadow-sm"
                     >
                       <svg class="w-full h-full -rotate-90" viewBox="0 0 64 64">
-                        <circle cx="32" cy="32" r="25" stroke="#334155" stroke-width="5" fill="none" />
+                        <circle cx="32" cy="32" r="25" stroke="#334155" stroke-width="6" fill="none" />
                         <circle
                           cx="32"
                           cy="32"
                           r="25"
                           :stroke="`url(#gradient-t-${record.id})`"
-                          stroke-width="5"
+                          stroke-width="6"
                           stroke-linecap="round"
                           fill="none"
                           stroke-dasharray="157.08"
@@ -950,8 +862,9 @@ onUnmounted(() => {
                     <button 
                       @click="$router.push(`/records/${record.id}`)"
                       class="px-1.5 py-1 bg-sky-950/90 hover:bg-sky-900/90 text-sky-300 hover:text-sky-200 border border-sky-800/80 hover:border-sky-600 rounded-md font-bold text-[10px] sm:text-xs shrink-0 cursor-pointer inline-flex items-center gap-0.5 shadow-sm"
+                      title="詳細画面を開く"
                     >
-                      <span>詳細</span>
+                      <span>詳細画面 ↗</span>
                     </button>
                   </div>
                 </td>
@@ -959,12 +872,12 @@ onUnmounted(() => {
               <!-- 行拡張アコーディオン詳細 -->
               <tr v-if="isRecordDetailOpen(record.id)" class="bg-slate-900/80">
                 <td colspan="9" class="p-2 sm:p-4 border-b border-slate-700/60">
-                  <div class="sticky left-0 flex flex-col gap-3.5 w-[calc(100vw-8rem)] xl:w-full max-w-full overflow-hidden pr-3">
+                  <div class="flex flex-col gap-3.5 w-full max-w-full overflow-hidden">
                     <div v-if="record.audio_file_path" class="flex items-center gap-3 w-full max-w-2xl">
                       <CustomAudioPlayer :src="`http://localhost:8000/audio/${record.audio_file_path}`" />
                     </div>
                     <!-- AI分析サマリー -->
-                    <div v-if="record.analysis" class="grid grid-cols-1 xl:grid-cols-3 gap-3 border border-slate-700/40 rounded-xl p-3 bg-slate-950/60 w-full">
+                    <div v-if="record.analysis" class="grid grid-cols-1 md:grid-cols-3 gap-3 border border-slate-700/40 rounded-xl p-3 bg-slate-950/60 w-full">
                       <div class="bg-slate-900/90 p-3 rounded-lg border-l-4 border-emerald-400 space-y-1">
                         <h4 class="font-bold text-emerald-400 text-xs flex items-center gap-1">
                           <span>💡 顧客の関心点</span>
@@ -990,12 +903,12 @@ onUnmounted(() => {
                       <div v-if="record.transcripts.length === 0" class="text-xs text-slate-500 italic py-1">
                         対話ログデータが存在しません。「AI解析」を実行してください。
                       </div>
-                      <div v-else class="flex flex-col gap-2.5 max-h-80 overflow-y-auto pr-4 w-full">
+                      <div v-else class="flex flex-col gap-2.5 max-h-80 overflow-y-auto pr-2 w-full">
                         <div 
                           v-for="t in record.transcripts" 
                           :key="t.id" 
                           :class="[
-                            'p-3 rounded-xl max-w-[80%] xl:max-w-[70%] text-xs border leading-relaxed break-words shadow-sm',
+                            'p-3 rounded-xl max-w-[85%] md:max-w-[70%] text-xs border leading-relaxed break-words shadow-sm',
                             t.speaker === 'Sales' 
                               ? 'self-start bg-sky-950/60 border-sky-800/60 text-sky-100' 
                               : 'self-end bg-emerald-950/60 border-emerald-800/60 text-emerald-100'
