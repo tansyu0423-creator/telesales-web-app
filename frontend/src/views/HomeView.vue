@@ -719,10 +719,18 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- ローディング ＆ 該当データなし -->
-      <div v-if="loading && records.length === 0" class="text-center py-12 bg-slate-800/30 rounded-2xl border border-slate-800 text-slate-400">
-        <div class="animate-pulse flex flex-col items-center gap-2">
-          <span>通話データを読み込んでいます...</span>
+      <!-- スケルトンローダー (loading && records.length === 0) -->
+      <div v-if="loading && records.length === 0" class="space-y-3">
+        <div class="bg-slate-800/60 rounded-2xl border border-slate-700/60 p-4 animate-pulse space-y-3">
+          <div class="flex justify-between items-center pb-2 border-b border-slate-700/50">
+            <div class="h-4 bg-slate-700 rounded w-32"></div>
+            <div class="h-4 bg-slate-700 rounded w-20"></div>
+          </div>
+          <div class="space-y-2">
+            <div class="h-10 bg-slate-900/60 rounded-xl"></div>
+            <div class="h-10 bg-slate-900/60 rounded-xl"></div>
+            <div class="h-10 bg-slate-900/60 rounded-xl"></div>
+          </div>
         </div>
       </div>
       <div v-else-if="filteredRecords.length === 0" class="text-center py-12 bg-slate-800/30 rounded-2xl border border-slate-800 text-slate-400">
@@ -871,10 +879,13 @@ onUnmounted(() => {
               </tr>
               <!-- 行拡張アコーディオン詳細 -->
               <tr v-if="isRecordDetailOpen(record.id)" class="bg-slate-900/80">
-                <td colspan="9" class="p-2 sm:p-4 border-b border-slate-700/60">
+                <td colspan="9" class="p-3 sm:p-5 border-b border-slate-700/60">
                   <div class="flex flex-col gap-3.5 w-full max-w-full overflow-hidden">
                     <div v-if="record.audio_file_path" class="flex items-center gap-3 w-full max-w-2xl">
-                      <CustomAudioPlayer :src="`http://localhost:8000/audio/${record.audio_file_path}`" />
+                      <CustomAudioPlayer 
+                        :ref="el => setAudioPlayerRef(record.id, el)"
+                        :src="`http://localhost:8000/audio/${record.audio_file_path}`" 
+                      />
                     </div>
                     <!-- AI分析サマリー -->
                     <div v-if="record.analysis" class="grid grid-cols-1 md:grid-cols-3 gap-3 border border-slate-700/40 rounded-xl p-3 bg-slate-950/60 w-full">
@@ -897,9 +908,42 @@ onUnmounted(() => {
                         <p class="text-xs text-slate-300 leading-relaxed break-words">{{ record.analysis.recommended_action }}</p>
                       </div>
                     </div>
-                    <!-- 話者対話ログ -->
+
+                    <!-- 対話時間割合 (Talk-to-Listen Ratio) メーター -->
+                    <div v-if="record.transcripts && record.transcripts.length > 0" class="bg-slate-900/60 border border-slate-700/50 p-3 rounded-xl space-y-1.5 w-full">
+                      <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-1 text-xs">
+                        <span class="font-bold text-slate-300 flex items-center gap-2">
+                          <span>📊 対話割合 (Talk-to-Listen Ratio)</span>
+                          <span v-if="getTalkRatio(record.transcripts).salesRatio > 65" class="px-2 py-0.5 bg-amber-950/90 border border-amber-800 text-amber-300 text-[10px] font-bold rounded-full">⚠️ 営業話しすぎ注意 (65%超)</span>
+                          <span v-else-if="getTalkRatio(record.transcripts).salesRatio < 35" class="px-2 py-0.5 bg-sky-950/90 border border-sky-800 text-sky-300 text-[10px] font-bold rounded-full">ℹ️ 顧客主導対話</span>
+                          <span v-else class="px-2 py-0.5 bg-emerald-950/90 border border-emerald-800 text-emerald-300 text-[10px] font-bold rounded-full">✨ 理想的な対話バランス</span>
+                        </span>
+                        <span class="font-mono text-slate-400 text-[11px]">
+                          👔 営業: <strong class="text-sky-400">{{ getTalkRatio(record.transcripts).salesRatio }}%</strong> ({{ getTalkRatio(record.transcripts).salesDuration }}秒) / 
+                          👤 顧客: <strong class="text-emerald-400">{{ getTalkRatio(record.transcripts).customerRatio }}%</strong> ({{ getTalkRatio(record.transcripts).customerDuration }}秒)
+                        </span>
+                      </div>
+
+                      <div class="w-full h-3 bg-slate-950 rounded-full overflow-hidden flex border border-slate-700/80 p-0.5 shadow-inner">
+                        <div 
+                          class="h-full bg-gradient-to-r from-sky-500 to-blue-600 rounded-l-full transition-all duration-700" 
+                          :style="{ width: `${getTalkRatio(record.transcripts).salesRatio}%` }"
+                          :title="`営業発話: ${getTalkRatio(record.transcripts).salesRatio}%`"
+                        ></div>
+                        <div 
+                          class="h-full bg-gradient-to-r from-emerald-500 to-teal-400 rounded-r-full transition-all duration-700" 
+                          :style="{ width: `${getTalkRatio(record.transcripts).customerRatio}%` }"
+                          :title="`顧客発話: ${getTalkRatio(record.transcripts).customerRatio}%`"
+                        ></div>
+                      </div>
+                    </div>
+
+                    <!-- 話者対話ログ (クリックで音声連動再生) -->
                     <div class="space-y-2 w-full">
-                      <h4 class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">💬 対話ログ (話者識別: 営業 vs 顧客)</h4>
+                      <div class="flex justify-between items-center">
+                        <h4 class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">💬 対話ログ (話者識別: 営業 vs 顧客)</h4>
+                        <span class="text-[10px] text-sky-400 font-medium">💡 発話をクリックでその時間へジャンプ再生</span>
+                      </div>
                       <div v-if="record.transcripts.length === 0" class="text-xs text-slate-500 italic py-1">
                         対話ログデータが存在しません。「AI解析」を実行してください。
                       </div>
@@ -907,16 +951,32 @@ onUnmounted(() => {
                         <div 
                           v-for="t in record.transcripts" 
                           :key="t.id" 
+                          @click="seekAudioTo(record.id, t.start_time)"
                           :class="[
-                            'p-3 rounded-xl max-w-[85%] md:max-w-[70%] text-xs border leading-relaxed break-words shadow-sm',
+                            'p-3 rounded-xl max-w-[85%] md:max-w-[70%] text-xs border leading-relaxed break-words cursor-pointer transition-all hover:scale-[1.01] shadow-sm group',
                             t.speaker === 'Sales' 
-                              ? 'self-start bg-sky-950/60 border-sky-800/60 text-sky-100' 
-                              : 'self-end bg-emerald-950/60 border-emerald-800/60 text-emerald-100'
+                              ? 'self-start bg-sky-950/60 hover:bg-sky-900/80 border-sky-800/60 hover:border-sky-500 text-sky-100' 
+                              : getObjectionTags(t.text, t.speaker).length > 0
+                                ? 'self-end bg-amber-950/60 hover:bg-amber-900/80 border-amber-500/80 hover:border-amber-400 text-amber-100 ring-1 ring-amber-500/30'
+                                : 'self-end bg-emerald-950/60 hover:bg-emerald-900/80 border-emerald-800/60 hover:border-emerald-500 text-emerald-100'
                           ]"
+                          title="クリックしてこの時間から音声再生"
                         >
-                          <div class="flex justify-between items-center text-[10px] text-slate-400 mb-1 gap-2">
-                            <span class="font-bold text-slate-200">{{ t.speaker === 'Sales' ? '👔 営業担当者' : '👤 顧客' }}</span>
-                            <span class="font-mono text-slate-500">{{ t.start_time.toFixed(1) }}s - {{ t.end_time.toFixed(1) }}s</span>
+                          <div class="flex justify-between items-center text-[10px] text-slate-400 mb-1 gap-2 flex-wrap">
+                            <div class="flex items-center gap-1.5 flex-wrap">
+                              <span class="font-bold text-slate-200">{{ t.speaker === 'Sales' ? '👔 営業担当者' : '👤 顧客' }}</span>
+                              <span 
+                                v-for="(tag, idx) in getObjectionTags(t.text, t.speaker)" 
+                                :key="idx"
+                                :class="['px-1.5 py-0.2 text-[9px] font-bold border rounded-md shadow-xs flex items-center gap-0.5', tag.class]"
+                              >
+                                {{ tag.label }}
+                              </span>
+                            </div>
+                            <span class="font-mono text-slate-400 group-hover:text-sky-300 flex items-center gap-1 transition-colors">
+                              <span class="text-[9px] px-1 py-0.2 bg-slate-900/80 rounded border border-slate-700 group-hover:border-sky-500">▶ {{ t.start_time.toFixed(1) }}s</span>
+                              <span>- {{ t.end_time.toFixed(1) }}s</span>
+                            </span>
                           </div>
                           <div class="break-words leading-relaxed">{{ t.text }}</div>
                         </div>

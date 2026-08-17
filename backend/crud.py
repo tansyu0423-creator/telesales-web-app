@@ -36,6 +36,10 @@ async def create_or_update_analysis_result(db: AsyncSession, analysis_data: sche
         return existing_result
     else:
         db_analysis = models.AnalysisResult(**analysis_data.model_dump())
+        db.add(db_analysis)
+        await db.commit()
+        await db.refresh(db_analysis)
+        return db_analysis
 async def delete_call_record(db: AsyncSession, record_id: int):
     # 1. 関連する文字起こしデータを削除
     stmt_t = select(models.Transcript).where(models.Transcript.call_record_id == record_id)
