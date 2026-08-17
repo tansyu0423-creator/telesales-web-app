@@ -248,3 +248,54 @@ def test_derive_rank_from_probability():
     assert derive_rank_from_probability(49) == "C"
     assert derive_rank_from_probability(27) == "D"
     assert derive_rank_from_probability(8) == "E"
+
+
+@pytest.mark.asyncio
+async def test_settings_endpoints():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        # Test get users
+        res = await ac.get("/settings/users")
+        assert res.status_code == 200
+        users = res.json()
+        assert len(users) >= 3
+
+        # Test create user
+        new_u = {
+            "username": "testuser_99",
+            "password": "password99",
+            "name": "テスト ユーザー",
+            "role": "営業担当者"
+        }
+        res_create = await ac.post("/settings/users", json=new_u)
+        assert res_create.status_code == 200
+        assert res_create.json()["username"] == "testuser_99"
+
+        # Test get config
+        res_cfg = await ac.get("/settings/config")
+        assert res_cfg.status_code == 200
+        cfg_data = res_cfg.json()
+        assert "rank_thresholds" in cfg_data
+
+        # Test update config
+        cfg_data["rank_thresholds"]["s_rank"] = 88
+        res_upd = await ac.post("/settings/config", json=cfg_data)
+        assert res_upd.status_code == 200
+        assert res_upd.json()["rank_thresholds"]["s_rank"] == 88
+
+        # Test delete user
+        res_del = await ac.delete("/settings/users/testuser_99")
+        assert res_del.status_code == 200
+
+@pytest.mark.asyncio
+async def test_login_api():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        # 成功ケース
+        resp = await ac.post("/login", json={"username": "admin", "password": "telesales2026!"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["username"] == "admin"
+        assert "access_token" in data
+
+        # 失敗ケース
+        resp_err = await ac.post("/login", json={"username": "admin", "password": "wrongpassword"})
+        assert resp_err.status_code == 401

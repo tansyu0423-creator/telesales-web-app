@@ -1,5 +1,6 @@
 import json
 from typing import List, Dict, Any
+import httpx
 from groq import Groq
 from google import genai
 from google.genai import types
@@ -11,17 +12,47 @@ except ImportError:
     from config import settings
     import schemas
 
-client = Groq(api_key=settings.groq_api_key)
+client = Groq(api_key=settings.groq_api_key) if settings.groq_api_key else None
 MODEL_NAME = "llama-3.3-70b-versatile"
 
 gemini_client = genai.Client(api_key=settings.gemini_api_key) if settings.gemini_api_key else None
 groq_client = client
+
+
+def call_openrouter_api(prompt: str) -> Dict[str, Any]:
+    """
+    OpenRouter API (Mistral等) へフォールバックリクエストを送信する関数。
+    """
+    api_key = getattr(settings, "openrouter_api_key", "")
+    if not api_key:
+        raise ValueError("OPENROUTER_API_KEY is not set")
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    groq_prompt = prompt + "\n\n出力は必ず以下のキーを持つJSON形式にしてください: {\"purchase_probability\": 0から100の数値, \"customer_interest\": \"文字列\", \"concerns\": \"文字列\", \"recommended_action\": \"文字列\"}"
+
+    payload = {
+        "model": "mistralai/mistral-7b-instruct:free",
+        "messages": [{"role": "user", "content": groq_prompt}],
+        "temperature": 0.5,
+        "response_format": {"type": "json_object"}
+    }
+    with httpx.Client(timeout=15.0) as http_client:
+        res = http_client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
+        res.raise_for_status()
+        res_data = res.json()
+        content = res_data["choices"][0]["message"]["content"]
+        return json.loads(content)
+
 
 def calculate_overlap(start1: float, end1: float, start2: float, end2: float) -> float:
     """2つのタイムセグメントの重なり時間（秒）を計算"""
     overlap_start = max(start1, start2)
     overlap_end = min(end1, end2)
     return max(0.0, overlap_end - overlap_start)
+
 
 def merge_whisper_and_diarization(words, diarization_segments):
     """
@@ -31,7 +62,6 @@ def merge_whisper_and_diarization(words, diarization_segments):
     if not words:
         return []
 
-    # 1. 単語ごとに、どの話者に属するかをより厳密にマッピング（マージンを狭くして境界の混信を防ぐ）
     word_items = []
     for w in words:
         if isinstance(w, dict):
@@ -45,21 +75,18 @@ def merge_whisper_and_diarization(words, diarization_segments):
 
         word_mid = (w_start + w_end) / 2.0
         
-        # 厳密な包含関係を優先し、マージンは最小限（±0.1秒）にする
         matched_speaker = None
         for seg in diarization_segments:
             if seg["start"] <= word_mid <= seg["end"]:
                 matched_speaker = str(seg["speaker_id"])
                 break
         
-        # 完全に収まらない場合の許容マージン（±0.15秒と短めに設定）
         if matched_speaker is None:
             for seg in diarization_segments:
                 if seg["start"] - 0.15 <= word_mid <= seg["end"] + 0.15:
                     matched_speaker = str(seg["speaker_id"])
                     break
 
-        # それでも決まらない場合は直前の話者を継承
         if matched_speaker is None and word_items:
             matched_speaker = word_items[-1]["speaker"]
         elif matched_speaker is None:
@@ -72,7 +99,6 @@ def merge_whisper_and_diarization(words, diarization_segments):
             "speaker": matched_speaker
         })
 
-    # 2. 話者が変わるポイントでグループ化（無音の判定も0.6秒と少しタイトにして細かくキレを出す）
     raw_segments = []
     if not word_items:
         return []
@@ -112,7 +138,6 @@ def merge_whisper_and_diarization(words, diarization_segments):
             "text": cur_text.strip()
         })
 
-    # 3. 句読点を基準にした文分割（ターンブレーカー）
     refined_segments = []
     for seg in raw_segments:
         text = seg["text"]
@@ -139,7 +164,6 @@ def merge_whisper_and_diarization(words, diarization_segments):
 
         refined_segments.append(seg)
 
-    # 4. 同話者の連続を自然に結合（結合間隔を0.5秒以内に絞り、混信を防ぐ）
     merged_segments = []
     for seg in refined_segments:
         if not seg["text"]:
@@ -155,11 +179,10 @@ def merge_whisper_and_diarization(words, diarization_segments):
 
     return merged_segments
 
+
 def merge_consecutive_speakers(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Whisperが認識したテキストのスペースを、
-    文末表現（です、ました等）の後は句点（。）に、それ以外は読点（、）に
-    自動で美しく変換して結合する関数。
+    Whisperが認識したテキストのスペースを語尾判定に基づき適切に結合する関数
     """
     if not segments:
         return []
@@ -167,32 +190,26 @@ def merge_consecutive_speakers(segments: List[Dict[str, Any]]) -> List[Dict[str,
     merged = []
 
     def format_segment(text: str) -> str:
-        # 空白でテキストを分割
         parts = [p.strip() for p in text.split() if p.strip()]
         if not parts:
             return ""
         
         formatted_text = ""
         for i, part in enumerate(parts):
-            # 万が一付いている元の句読点を一旦クリーンにする
             clean_part = part.rstrip("。、！？!?")
             formatted_text += clean_part
             
-            # 最後の要素以外は「、」か「。」で繋ぐ
             if i < len(parts) - 1:
-                # 助動詞や終助詞など、文の終わりになりやすい語尾を判定
                 if clean_part.endswith(("す", "た", "か", "ね", "よ", "さい", "せん", "ましょう", "だ", "ない")):
                     formatted_text += "。"
                 else:
                     formatted_text += "、"
         
-        # セグメントの最後には必ず句点「。」を打つ
         if not formatted_text.endswith(("。", "！", "？", "!", "?")):
             formatted_text += "。"
         
         return formatted_text
 
-    # 最初のセグメントを初期化
     first_text = format_segment(segments[0]["text"])
     current = {
         "start": segments[0]["start"],
@@ -207,11 +224,9 @@ def merge_consecutive_speakers(segments: List[Dict[str, Any]]) -> List[Dict[str,
             continue
 
         if next_seg["speaker"] == current["speaker"]:
-            # 同じ話者の場合：各文末は既に正しくフォーマットされているためそのまま結合
             current["end"] = next_seg["end"]
             current["text"] += next_text
         else:
-            # 話者が変わった場合：現在のブロックを確定して新しいブロックへ
             merged.append(current)
             current = {
                 "start": next_seg["start"],
@@ -225,10 +240,7 @@ def merge_consecutive_speakers(segments: List[Dict[str, Any]]) -> List[Dict[str,
 
 
 def identify_roles_by_llm(merged_segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    ハードコードを一切排し、アウトバウンド・テレセールスの構造的原則
-    （発信者が最初に名乗り、用件を切り出す）をLLMに厳密に認識させてロール判定を行う関数。
-    """
+    """LLMによる発話役割（Sales vs Customer）判定"""
     if not merged_segments:
         return []
 
@@ -244,84 +256,92 @@ def identify_roles_by_llm(merged_segments: List[Dict[str, Any]]) -> List[Dict[st
 あなたはプロフェッショナルな音声対話解析AIです。以下のデータは「企業から顧客へかけたアウトバウンドのテレセールス（電話営業）」の文字起こしログです。
 各セリフが「営業担当者（Sales）」のものか、「顧客（Customer）」のものかを論理的に判定してください。
 
-【アウトバウンド・テレセールスの構造的原則】
-1. **営業担当者 (Sales)** の定義:
-   - この通話は営業側から発信しているため、**時間の流れにおいて最初に発言し、自社名や自身の名前を名乗る人物は必ず営業担当者**です。
-   - 用件の切り出し、「お時間よろしいでしょうか」というアポイントの打診、および顧客からの状況報告に対するクロージング（「ありがとうございます」「承知しました」「失礼します」など）を行います。
-2. **顧客 (Customer)** の定義:
-   - 営業からの呼びかけに対して応答する側です。
-   - 「こんにちは、〜です」「お電話ありがとうございます」という第一声の応答や、「現在外出中で手が離せない」といった自身のスケジュール・状況の伝達を行います。
-
 【会話ログ】
 {full_sample}
 
 【出力形式】
 JSON形式で、各セリフのID（文字列の数字）をキー、判定結果（"Sales" または "Customer"）を値にしたオブジェクトのみを出力してください。
-例:
-{{
-  "0": "Sales",
-  "1": "Customer"
-}}
 """
 
-    try:
-        response = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.0,
-            response_format={"type": "json_object"}
-        )
-        role_map = json.loads(response.choices[0].message.content or "{}")
+    if client:
+        try:
+            response = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+                response_format={"type": "json_object"}
+            )
+            role_map = json.loads(response.choices[0].message.content or "{}")
 
-        final_segments = []
-        for idx, s in enumerate(merged_segments):
-            text = s["text"].strip()
-            assigned_role = role_map.get(str(idx))
+            final_segments = []
+            for idx, s in enumerate(merged_segments):
+                text = s["text"].strip()
+                assigned_role = role_map.get(str(idx))
 
-            # 万が一LLMが判断に迷った場合の安全なフォールバック（ハードコードではなく対話構造に基づく論理フォールバック）
-            if assigned_role not in ["Sales", "Customer"]:
-                # 時間的順序において、最初の発話は構造上Sales、以降は交互または文脈依存
-                assigned_role = "Sales" if idx == 0 else "Customer"
+                if assigned_role not in ["Sales", "Customer"]:
+                    assigned_role = "Sales" if idx == 0 else "Customer"
+                
+                final_segments.append({
+                    "start": s["start"],
+                    "end": s["end"],
+                    "text": text,
+                    "speaker": assigned_role
+                })
             
-            final_segments.append({
-                "start": s["start"],
-                "end": s["end"],
-                "text": text,
-                "speaker": assigned_role
-            })
-        
-        return merge_consecutive_speakers(final_segments)
+            return merge_consecutive_speakers(final_segments)
 
-    except Exception as e:
-        print(f"Role Identification Error: {e}")
-        fallback_segments = [
-            {
-                "start": s["start"],
-                "end": s["end"],
-                "text": s["text"].strip(),
-                "speaker": "Sales" if idx == 0 else "Customer"
-            }
-            for idx, s in enumerate(merged_segments)
-        ]
-        return merge_consecutive_speakers(fallback_segments)
+        except Exception as e:
+            print(f"Role Identification Error: {e}")
 
+    fallback_segments = [
+        {
+            "start": s["start"],
+            "end": s["end"],
+            "text": s["text"].strip(),
+            "speaker": "Sales" if idx == 0 else "Customer"
+        }
+        for idx, s in enumerate(merged_segments)
+    ]
+    return merge_consecutive_speakers(fallback_segments)
+
+
+import os
+
+def get_rank_thresholds() -> Dict[str, float]:
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "system_config.json")
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                th = data.get("rank_thresholds", {})
+                return {
+                    "s": float(th.get("s_rank", 90)),
+                    "a": float(th.get("a_rank", 70)),
+                    "b": float(th.get("b_rank", 50)),
+                    "c": float(th.get("c_rank", 30)),
+                    "d": float(th.get("d_rank", 10)),
+                }
+        except Exception:
+            pass
+    return {"s": 90.0, "a": 70.0, "b": 50.0, "c": 30.0, "d": 10.0}
 
 def derive_rank_from_probability(prob: float) -> str:
-    """成約率パーセンテージからランク(S〜E)を自動算出"""
+    """成約率パーセンテージからランク(S〜E)を自動算出（システム設定の閾値を適用）"""
     try:
         val = float(prob or 0)
     except (ValueError, TypeError):
         val = 0.0
 
-    if val >= 90.0:
+    th = get_rank_thresholds()
+    if val >= th["s"]:
         return "S"
-    elif val >= 70.0:
+    elif val >= th["a"]:
         return "A"
-    elif val >= 50.0:
+    elif val >= th["b"]:
         return "B"
-    elif val >= 30.0:
+    elif val >= th["c"]:
         return "C"
-    elif val >= 10.0:
+    elif val >= th["d"]:
         return "D"
     else:
         return "E"
@@ -329,8 +349,7 @@ def derive_rank_from_probability(prob: float) -> str:
 
 def analyze_and_score_call(record_id: int, transcripts: List[Dict[str, Any]]) -> schemas.AnalysisResultCreate:
     """
-    通話ログを分析し、指定されたPydanticスキーマに沿ってランクや成約確率を算出する。
-    4観点のルーブリック評価（各0-25点）により1%刻みのリアルな成約率を算出し、バックエンドでランクを自動導出する。
+    通話ログを分析し、Gemini -> Groq -> OpenRouter -> デフォルト値 の順でフォールバックしながらスコアリングを実行する。
     """
     if not transcripts:
         return schemas.AnalysisResultCreate(
@@ -355,14 +374,13 @@ def analyze_and_score_call(record_id: int, transcripts: List[Dict[str, Any]]) ->
     3. 次回アクション・スケジュールの具体性 (0〜25点)
     4. 懸念・反論リスクの少なさ (0〜25点)
 
-    ※ 80, 60, 50, 40 などの典型的な5や10の倍数に丸めず、各観点の加算結果によるリアルな1%単位の数値（例: 83, 76, 62, 49, 27, 8 など）を正確に算出してください。
-
     【対話ログ】
     {dialogue_text}
     """
 
     result_dict = {}
 
+    # 1. Primary: Gemini API
     if gemini_client:
         try:
             print("Gemini API でスコアリングを実行中...")
@@ -389,6 +407,7 @@ def analyze_and_score_call(record_id: int, transcripts: List[Dict[str, Any]]) ->
         except Exception as e:
             print(f"Gemini API Error, Groqにフォールバックします: {e}")
 
+    # 2. Secondary: Groq API
     if not result_dict and groq_client:
         try:
             print("Groq API でスコアリングを実行中...")
@@ -403,7 +422,27 @@ def analyze_and_score_call(record_id: int, transcripts: List[Dict[str, Any]]) ->
             result_text = response.choices[0].message.content or "{}"
             result_dict = json.loads(result_text)
         except Exception as e:
-            print(f"Groq API Error: {e}")
+            print(f"Groq API Error, OpenRouterにフォールバックします: {e}")
+
+    # 3. Tertiary: OpenRouter API (新規追加)
+    if not result_dict and getattr(settings, "openrouter_api_key", ""):
+        try:
+            print("OpenRouter API でスコアリング（フォールバック）を実行中...")
+            result_dict = call_openrouter_api(prompt)
+        except Exception as e:
+            print(f"OpenRouter API Error: {e}")
+
+    # 4. 安全保護: 全AIサービスダウン・クォータ制限(429)時の安全デフォルト返却
+    if not result_dict:
+        print("警告: 全てのLLM API（Gemini/Groq/OpenRouter）がクォータ制限またはダウンのため、安全デフォルト値を返却します。")
+        return schemas.AnalysisResultCreate(
+            call_record_id=record_id,
+            rank="C",
+            purchase_probability=50,
+            customer_interest="API制限のため一時的に解析できません",
+            concerns="API制限のため一時的に解析できません",
+            recommended_action="APIの利用制限（429）または通信エラーが発生しました。時間を置いて再解析を実行してください。"
+        )
 
     prob = result_dict.get("purchase_probability", 50)
     try:
@@ -411,7 +450,6 @@ def analyze_and_score_call(record_id: int, transcripts: List[Dict[str, Any]]) ->
     except (ValueError, TypeError):
         prob_val = 50
 
-    # バックエンド側で確実にパーセンテージと連動させてランクを自動導出
     rank_val = derive_rank_from_probability(prob_val)
 
     return schemas.AnalysisResultCreate(

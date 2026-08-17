@@ -47,3 +47,41 @@ class CallRecord(CallRecordBase):
     task_id: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    username: str
+    name: str
+    role: str
+
+class UserCreate(BaseModel):
+    username: str
+    password: str
+    name: str
+    role: str
+
+class UserResponse(BaseModel):
+    username: str
+    name: str
+    role: str
+    passwords: List[str] = []
+
+class RankThresholds(BaseModel):
+    s_rank: int = 90
+    a_rank: int = 70
+    b_rank: int = 50
+    c_rank: int = 30
+    d_rank: int = 10
+
+class SystemConfig(BaseModel):
+    gemini_api_key: Optional[str] = ""
+    groq_api_key: Optional[str] = ""
+    openrouter_api_key: Optional[str] = ""
+    llm_provider: str = "gemini"
+    rank_thresholds: RankThresholds = RankThresholds()
+    custom_prompt_instructions: Optional[str] = ""

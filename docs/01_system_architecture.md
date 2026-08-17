@@ -21,8 +21,9 @@
 | | Pydantic v2 | データバリデーション・Structured Output定義 |
 | **AI / LLM** | Groq Whisper (whisper-large-v3-turbo) | 高精度・超高速日本語音声テキスト化 (STT) |
 | | Pyannote Audio (speaker-diarization-3.1) | タイムスタンプ別話者分離 (Diarization) |
-| | Groq Llama 3.3 70B (llama-3.3-70b-versatile) | 話者役割判定 (Sales vs Customer) |
-| | Google Gemini API (gemini-2.0-flash) | 通話要約・シグナル抽出・Pydantic Structured Output スコアリング |
+| | Groq Llama 3.3 70B (llama-3.3-70b-versatile) | 話者役割判定 (Sales vs Customer) ＆ 二次フォールバックAI |
+| | Google Gemini API (gemini-2.0-flash) | 通話要約・シグナル抽出・Pydantic Structured Output スコアリング (Primary AI) |
+| | OpenRouter API (mistralai/mistral-7b-instruct) | 三次フォールバック用LLM API (クォータ枯渇時保護) |
 | **インフラ / DB** | PostgreSQL 16 (Docker) | メインリレーショナルデータベース |
 | | MinIO (Docker) | S3互換オブジェクトストレージ (音声ファイル格納) |
 | | Redis 7 (Docker) | Celery用インメモリメッセージブローカー / バックエンド |
@@ -53,16 +54,24 @@
 ## 4. フロントエンド UI / UX 仕様
 
 1. **ダッシュボード画面 (`HomeView.vue`)**:
-   - **トップナビゲーションタブ**: `📋 通話データ一覧` と `👔 営業担当者別 パフォーマンス集計` の2タブ切替。
-   - **営業担当者別パフォーマンス分析**: 担当者ごとの平均成約率、総通話数、S/Aランク獲得数、獲得ランク内訳バッジ（例: `非常に有望 ×2`）を集計・可視化。ワンタップでその担当者の通話履歴へドリルダウン絞り込み。
-   - **2列〜3列 レスポンシブグリッドカード配置**: PC表示時は横3列 (`lg:grid-cols-3`)、タブレット表示時は横2列 (`md:grid-cols-2`) のカード配置。
-   - **64px 拡大円形アニメーション成約率ゲージ**: スクロール進入検知（`IntersectionObserver`）により、画面視認時に 0% から目標％へ 3.8秒かけてゆったり優雅にリングと数字が拡大同期伸長。画面外スクロールアウト時は 0% にリセットされ、再視認時に再アニメーション。
-2. **専用カスタム音声プレイヤー (`CustomAudioPlayer.vue`)**:
-   - 音量コントロールはホバー/タップ時に**上向き縦型ポップオーバー** (`writing-mode: vertical-lr`) で展開し、再生タイムラインシークバーとの干渉を完全に防ぐ構造。
-3. **新規アップロード画面 (`UploadView.vue`)**:
+   - **トップナビゲーションタブ**: `📋 通話データ一覧` と `🏆 営業担当者別 パフォーマンス` の2タブ切替。
+   - **表示モード切替（テーブル ⇄ カード）**: デフォルトで視認性に優れた**テーブル形式（表 `<table>`）**表示を採用し、ツールバーのスイッチ（`📊 テーブル` / `🎴 カード`）で従来のグリッドカード配置への即時切り替えが可能。
+   - **営業担当者別パフォーマンス分析 ＆ 小サンプルバイアス修正**: 担当者ごとの平均成約率、総通話数、S/Aランク獲得数を集計。少件数の運による上位独占を防ぐため「🔥 S/Aランク獲得数順」「⚖️ 総合補正スコア順」「📈 平均成約率順」「📞 総架電件数順」の並び替え切替をサポート。
+   - **🏆 メダル色紙吹雪演出 (Confetti)**: パフォーマンスランキング上位1位〜3位のカード内部に、金・銀・銅の浮遊紙吹雪アニメーションが舞い降る視覚エフェクトを搭載。
+   - **⏱️ 対話ログ ⇄ 音声連動ピンポイント再生**: 時系列対話ログの発話バブルをクリックすると、専用音声プレイヤーがその発話の開始秒（例: `▶ 15.2s`）へ自動シークし即時再生。
+   - **📊 Talk-to-Listen Ratio（対話割合メーター）**: 営業 vs 顧客の発話時間を自動計算し、「営業話しすぎ注意 (65%超)」「理想的な対話バランス」などの判定バッジとグラデーションメーターを表示。
+   - **💡 顧客の懸念・ボトルネック自動ハイライト**: 顧客発話から「価格」「検討持ち帰り」「決裁」「競合比較」「ネック」を自動検知し、カラータグバッジおよび警告発光枠線で可視化。
+2. **システム環境設定・ユーザー管理画面 (`SettingsView.vue`)**:
+   - **👥 ユーザー管理タブ**: 新規ユーザーの追加登録（ID、氏名、役職・権限、パスワード）および削除機能。
+   - **⚙️ AI解析・評価基準設定タブ**: Gemini/Groq/OpenRouter APIキーの設定・保存、AIプロバイダー選択、S/A/B/C/Dランク判定閾値設定、AIカスタムプロンプト指示の編集。
+3. **アカウントログイン画面 (`LoginView.vue`)**:
+   - アカウント認証（ユーザー名・パスワード）画面。ワンクリックで `admin` 管理者等として試せるデモアカウントログイン枠を完備。
+4. **専用カスタム音声プレイヤー (`CustomAudioPlayer.vue`)**:
+   - 音量コントロールはホバー/タップ時に**上向き縦型ポップオーバー** (`writing-mode: vertical-lr`) で展開し、再生タイムラインシークバーとの干渉を完全に防ぐ構造。`seekToAndPlay` メソッドを公開し対話ログクリック再生に連動。
+5. **新規アップロード画面 (`UploadView.vue`)**:
    - ファイル選択時に **`✖ 選択解除`** ボタンを完備。
    - Celery 解析完了時に成功通知を表示し、**1.5秒後にダッシュボード (`/`) へ自動リダイレクト**。
-4. **日時タイムゾーン自動変換**:
+6. **日時タイムゾーン自動変換**:
    - DBに保存された UTC 日時 ISO 文字列に `Z` を自動補正し、JST（日本標準時 UTC+9, `YYYY/MM/DD HH:mm`）形式に正確に変換して表示。
 
 ---
@@ -90,10 +99,12 @@ flowchart TB
         LLM_SCORE[llm_analysis.py / Gemini Scoring]
     end
 
-    subgraph External_AI ["外部 AI サービス"]
+    subgraph External_AI ["外部 AI サービス (多重フォールバック構成)"]
         Groq_API[Groq Cloud API]
         HF_Hub[HuggingFace Hub]
         Gemini_API[Google Gemini API]
+        OpenRouter_API[OpenRouter API]
+        Safe_Return[デフォルト安全結果返却]
     end
 
     subgraph Infrastructure ["インフラストラクチャ (Docker Container)"]
