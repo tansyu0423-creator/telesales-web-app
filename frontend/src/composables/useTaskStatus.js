@@ -15,7 +15,12 @@ export function useTaskStatus() {
             const response = await api.get(`/tasks/${store.taskId}`)
             const data = response.data
 
+            if (data.step) {
+                store.setCurrentStep(data.step)
+            }
+
             if (data.status === 'SUCCESS') {
+                store.setCurrentStep(4)
                 store.setTaskState('success')
             } else if (data.status === 'FAILURE') {
                 store.setTaskState('error', null, data.error || 'バックグラウンド処理でエラーが発生しました')

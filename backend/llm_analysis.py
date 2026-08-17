@@ -36,7 +36,7 @@ def call_openrouter_api(prompt: str) -> Dict[str, Any]:
     payload = {
         "model": "mistralai/mistral-7b-instruct:free",
         "messages": [{"role": "user", "content": groq_prompt}],
-        "temperature": 0.5,
+        "temperature": 0.1,
         "response_format": {"type": "json_object"}
     }
     with httpx.Client(timeout=15.0) as http_client:
@@ -180,6 +180,46 @@ def merge_whisper_and_diarization(words, diarization_segments):
     return merged_segments
 
 
+def repair_split_japanese_words(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    話者切り替わり時に単語や熟語（例: 「ご懸」＋「念」➔ 「ご懸念」）が不自然に分断されたり、
+    句読点「。」が途中に挿入されてしまった箇所の修復・補正を行う関数
+    """
+    if not segments or len(segments) < 2:
+        return segments
+
+    # 熟語・接頭辞と接尾辞の分断修復ルール定義
+    split_rules = [
+        ("ご懸", "念", "ご懸念"),
+        ("ご関", "心", "ご関心"),
+        ("ご確", "認", "ご確認"),
+        ("ご対", "応", "ご対応"),
+        ("お問", "い合わせ", "お問い合わせ"),
+        ("お問", "合せ", "お問い合わせ"),
+        ("お世", "話", "お世話"),
+        ("ありが", "とう", "ありがとう"),
+    ]
+
+    for i in range(len(segments) - 1):
+        text_curr = segments[i]["text"].rstrip("。、 　")
+        text_next = segments[i + 1]["text"].lstrip("。、 　")
+
+        for prefix, suffix, full_word in split_rules:
+            if text_curr.endswith(prefix) and text_next.startswith(suffix):
+                # 直前の発話末尾から接頭辞を除去
+                cleaned_curr = text_curr[:-len(prefix)].rstrip("。、 　")
+                if not cleaned_curr.endswith(("。", "！", "？", "!", "?")):
+                    cleaned_curr += "。"
+                segments[i]["text"] = cleaned_curr
+
+                # 次の発話頭に全単語（例: ご懸念）を付与
+                cleaned_next = text_next[len(suffix):].lstrip("。、 {")
+                segments[i + 1]["text"] = full_word + cleaned_next
+                break
+
+    return segments
+
+
 def merge_consecutive_speakers(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Whisperが認識したテキストのスペースを語尾判定に基づき適切に結合する関数
@@ -236,7 +276,7 @@ def merge_consecutive_speakers(segments: List[Dict[str, Any]]) -> List[Dict[str,
             }
     
     merged.append(current)
-    return merged
+    return repair_split_japanese_words(merged)
 
 
 def identify_roles_by_llm(merged_segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -374,6 +414,22 @@ def analyze_and_score_call(record_id: int, transcripts: List[Dict[str, Any]]) ->
     3. 次回アクション・スケジュールの具体性 (0〜25点)
     4. 懸念・反論リスクの少なさ (0〜25点)
 
+    【評価例 (Few-shot 判定サンプル)】
+    ・例1 (Sランク・非常に有望):
+      対話: 顧客「ぜひ導入したいです。来週月曜日に契約書を送ってください。」
+      期待評価: 関心・課題感・次回アクションがすべて確定し懸念なし。
+      期待スコア (`purchase_probability`): 92 (観点1:24, 観点2:23, 観点3:23, 観点4:22)
+
+    ・例2 (Bランク・検討中):
+      対話: 顧客「興味はありますが、予算と社内検討が必要です。資料をいただけますか。」
+      期待評価: 関心はあるが他社比較や予算調整が必要。
+      期待スコア (`purchase_probability`): 62 (観点1:18, 観点2:15, 観点3:14, 観点4:15)
+
+    ・例3 (Eランク・不可行):
+      対話: 顧客「すでに他社製品を長期契約したばかりで全く必要ありません。結構です。」
+      期待評価: 明確な拒絶・ターゲット外。
+      期待スコア (`purchase_probability`): 5 (観点1:2, 観点2:1, 観点3:0, 観点4:2)
+
     【対話ログ】
     {dialogue_text}
     """
@@ -385,12 +441,12 @@ def analyze_and_score_call(record_id: int, transcripts: List[Dict[str, Any]]) ->
         try:
             print("Gemini API でスコアリングを実行中...")
             response = gemini_client.models.generate_content(
-                model='gemini-2.0-flash',
+                model='gemini-2.5-flash',
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=schemas.AnalysisResultBase, 
-                    temperature=0.5,
+                    temperature=0.1,
                 ),
             )
             
@@ -416,7 +472,7 @@ def analyze_and_score_call(record_id: int, transcripts: List[Dict[str, Any]]) ->
             response = groq_client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=[{"role": "user", "content": groq_prompt}],
-                temperature=0.5,
+                temperature=0.1,
                 response_format={"type": "json_object"}
             )
             result_text = response.choices[0].message.content or "{}"

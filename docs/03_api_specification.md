@@ -131,7 +131,7 @@
   4. Pyannote Audio による話者分離タイムスタンプ取得
   5. Llama 3 70B による Sales vs Customer 役割同定
   6. DB (`transcripts`) への対話ログ一括保存
-  7. Gemini 2.0 Flash による成約率・S〜Eランク判定・関心点・懸念点・推奨アクション抽出 ＆ DB (`analysis_results`) への保存
+  7. Gemini 2.5 Flash による成約率・S〜Eランク判定・関心点・懸念点・推奨アクション抽出 ＆ DB (`analysis_results`) への保存
 - **レスポンス (202 Accepted)**:
   ```json
   {
@@ -146,11 +146,22 @@
 ### 3.6. Celery タスクステータス確認 API
 `GET /tasks/{task_id}`
 
-- **レスポンス (200 OK - 処理完了)**:
+- **レスポンス (200 OK - 処理実行中: PROGRESS)**:
+  ```json
+  {
+    "task_id": "f9ae5af7-f55a-4392-a6b4-701a75a32561",
+    "status": "PROGRESS",
+    "step": 2,
+    "phase": "diarization"
+  }
+  ```
+
+- **レスポンス (200 OK - 処理完了: SUCCESS)**:
   ```json
   {
     "task_id": "f9ae5af7-f55a-4392-a6b4-701a75a32561",
     "status": "SUCCESS",
+    "step": 4,
     "result": {
       "status": "success",
       "record_id": 1,

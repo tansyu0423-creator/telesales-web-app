@@ -119,5 +119,5 @@ onUnmounted(() => {
 const handleLogout = () => {
   authStore.logout()
   router.push('/login')
-})
+}
 </script>

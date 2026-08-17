@@ -442,6 +442,13 @@ def get_task_status(task_id: str):
         "task_id": task_id,
         "status": task_result.state,
     }
+    info = getattr(task_result, "info", None)
+    if isinstance(info, dict):
+        if "step" in info:
+            response["step"] = info.get("step")
+        if "phase" in info:
+            response["phase"] = info.get("phase")
+
     if task_result.ready():
         if task_result.successful():
             response["result"] = task_result.result

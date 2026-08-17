@@ -7,7 +7,7 @@
 | **`whisper-large-v3-turbo`** | Groq Cloud | 音声認識・文字起こし (STT) | 超高速推論 (リアルタイム比10倍以上)・日本語認識精度 |
 | **`speaker-diarization-3.1`** | Pyannote / HuggingFace | 話者分離 (Speaker Diarization) | タイムスタンプ別話者セグメント抽出のデファクトスタンダード |
 | **`llama-3.3-70b-versatile`** | Groq Cloud | 話者役割判定 ＆ 二次フォールバック | 構造的対話推論・超低遅延レスポンス・Geminiダウン時バックアップ |
-| **`gemini-2.0-flash`** | Google Cloud / Gemini API | メインAIスコアリング (Primary) | 大規模文脈受容・Native Structured Output (Pydantic連動) |
+| **`gemini-2.5-flash`** | Google Cloud / Gemini API | メインAIスコアリング (Primary) | 大規模文脈受容・Native Structured Output (Pydantic連動) |
 | **`mistral-7b-instruct`** | OpenRouter | 三次フォールバック (Tertiary) | 無料枠クォータ制限時の冗長化バックアップAPI |
 
 ---
@@ -55,7 +55,7 @@ JSON形式で、各セリフのID（文字列の数字）をキー、判定結�
 
 ### 3.2. Gemini Structured Output スコアリングプロンプト (`backend/llm_analysis.py`)
 Pydantic スキーマ `schemas.AnalysisResultBase` を `response_schema` に与え、型安全な成約率・ランク判定を行う。
-1%単位の精細なスコアリングを実現するため、4つの観点（各0〜25点）に基づくルーブリック細密評価プロンプトと `temperature=0.5` を採用し、ランク（S〜E）はバックエンドで自動導出する。
+1%単位の精細なスコアリングを実現するため、4つの観点（各0〜25点）に基づくルーブリック細密評価プロンプト、Few-shot 判定サンプル（S/B/Eランク例）、および `temperature=0.1` （決定論的安定化）を採用し、ランク（S〜E）はバックエンドで自動導出する。
 
 - **Pydantic スキーマ構造**:
   ```python
@@ -67,7 +67,7 @@ Pydantic スキーマ `schemas.AnalysisResultBase` を `response_schema` に与�
       recommended_action: str = Field(..., description="営業担当者が次にとるべき具体的な推奨アクション")
   ```
 
-- **ルーブリック細密評価スコアリングプロンプト**:
+- **ルーブリック細密評価 Few-shot スコアリングプロンプト**:
   ```text
   あなたはプロのインサイドセールス分析AIです。以下の電話営業の対話ログを細かく評価し、
   顧客の成約意欲・成約率 (`purchase_probability`: 0〜100の数値) を算出してください。
@@ -79,7 +79,21 @@ Pydantic スキーマ `schemas.AnalysisResultBase` を `response_schema` に与�
   3. 次回アクション・スケジュールの具体性 (0〜25点)
   4. 懸念・反論リスクの少なさ (0〜25点)
 
-  ※ 80, 60, 50, 40 などの典型的な5や10の倍数に丸めず、各観点の加算結果によるリアルな1%単位の数値（例: 83, 76, 62, 49, 27, 8 など）を正確に算出してください。
+  【評価例 (Few-shot 判定サンプル)】
+  ・例1 (Sランク・非常に有望):
+    対話: 顧客「ぜひ導入したいです。来週月曜日に契約書を送ってください。」
+    期待評価: 関心・課題感・次回アクションがすべて確定し懸念なし。
+    期待スコア (`purchase_probability`): 92 (観点1:24, 観点2:23, 観点3:23, 観点4:22)
+
+  ・例2 (Bランク・検討中):
+    対話: 顧客「興味はありますが、予算と社内検討が必要です。資料をいただけますか。」
+    期待評価: 関心はあるが他社比較や予算調整が必要。
+    期待スコア (`purchase_probability`): 62 (観点1:18, 観点2:15, 観点3:14, 観点4:15)
+
+  ・例3 (Eランク・不可行):
+    対話: 顧客「すでに他社製品を長期契約したばかりで全く必要ありません。結構です。」
+    期待評価: 明確な拒絶・ターゲット外。
+    期待スコア (`purchase_probability`): 5 (観点1:2, 観点2:1, 観点3:0, 観点4:2)
 
   【対話ログ】
   {dialogue_text}

@@ -44,6 +44,14 @@ def _run_async(coro):
         return asyncio.run(coro)
 
 
+def safe_update_state(task_self, state: str, meta: dict):
+    if task_self and getattr(task_self, "request", None) and getattr(task_self.request, "id", None):
+        try:
+            task_self.update_state(state=state, meta=meta)
+        except Exception:
+            pass
+
+
 @celery_app.task(bind=True, name="backend.tasks.transcribe_and_diarize_task")
 def transcribe_and_diarize_task(self, record_id: int) -> Dict[str, Any]:
     """
@@ -95,6 +103,7 @@ def transcribe_and_diarize_task(self, record_id: int) -> Dict[str, Any]:
                 ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
                 # 3. Groq Whisper による文字起こし（変換した wav_audio_path を使う）
+                safe_update_state(self, 'PROGRESS', {'step': 1, 'phase': 'stt'})
                 transcription = stt.transcribe_audio(wav_audio_path)
                 
                 words = getattr(transcription, 'words', [])
@@ -107,6 +116,7 @@ def transcribe_and_diarize_task(self, record_id: int) -> Dict[str, Any]:
                         words = transcription.get('segments', [])
 
                 # 4. Pyannote による話者分離（変換した wav_audio_path を使う）
+                safe_update_state(self, 'PROGRESS', {'step': 2, 'phase': 'diarization'})
                 diarization_segments = diarization.diarize_audio(wav_audio_path)
 
                 # 5. 単語レベルのタイムスタンプ・マージ
@@ -170,6 +180,7 @@ def score_record_task(self, record_id: int) -> Dict[str, Any]:
 
             transcript_dicts = [{"speaker": t.speaker, "text": t.text} for t in transcripts]
 
+            safe_update_state(self, 'PROGRESS', {'step': 3, 'phase': 'scoring'})
             analysis_data = llm_analysis.analyze_and_score_call(record_id, transcript_dicts)
             saved_result = await crud.create_or_update_analysis_result(db, analysis_data)
 
@@ -196,6 +207,7 @@ def score_record_task(self, record_id: int) -> Dict[str, Any]:
 @celery_app.task(bind=True, name="backend.tasks.full_pipeline_task")
 def full_pipeline_task(self, record_id: int) -> Dict[str, Any]:
     try:
+        safe_update_state(self, 'PROGRESS', {'step': 1, 'phase': 'stt'})
         t_res = transcribe_and_diarize_task(record_id)
         if isinstance(t_res, dict) and t_res.get("status") == "failure":
             return {
@@ -203,6 +215,7 @@ def full_pipeline_task(self, record_id: int) -> Dict[str, Any]:
                 "record_id": record_id,
                 "error": t_res.get("error", "文字起こし処理に失敗しました。")
             }
+        safe_update_state(self, 'PROGRESS', {'step': 3, 'phase': 'scoring'})
         s_res = score_record_task(record_id)
         if isinstance(s_res, dict) and s_res.get("status") == "failure":
             return {
