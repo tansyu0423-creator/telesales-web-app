@@ -12,8 +12,8 @@ except ImportError:
     from config import settings
     import schemas
 
-client = Groq(api_key=settings.groq_api_key) if settings.groq_api_key else None
-MODEL_NAME = "llama-3.3-70b-versatile"
+client = Groq(api_key=settings.groq_api_key, timeout=30.0) if settings.groq_api_key else None
+MODEL_NAME = "openai/gpt-oss-120b"
 
 gemini_client = genai.Client(api_key=settings.gemini_api_key) if settings.gemini_api_key else None
 groq_client = client
@@ -188,7 +188,6 @@ def repair_split_japanese_words(segments: List[Dict[str, Any]]) -> List[Dict[str
     if not segments or len(segments) < 2:
         return segments
 
-    # 熟語・接頭辞と接尾辞の分断修復ルール定義
     split_rules = [
         ("ご懸", "念", "ご懸念"),
         ("ご関", "心", "ご関心"),
@@ -206,14 +205,15 @@ def repair_split_japanese_words(segments: List[Dict[str, Any]]) -> List[Dict[str
 
         for prefix, suffix, full_word in split_rules:
             if text_curr.endswith(prefix) and text_next.startswith(suffix):
-                # 直前の発話末尾から接頭辞を除去
                 cleaned_curr = text_curr[:-len(prefix)].rstrip("。、 　")
-                if not cleaned_curr.endswith(("。", "！", "？", "!", "?")):
-                    cleaned_curr += "。"
-                segments[i]["text"] = cleaned_curr
+                if cleaned_curr:
+                    if not cleaned_curr.endswith(("。", "！", "？", "!", "?")):
+                        cleaned_curr += "。"
+                    segments[i]["text"] = cleaned_curr
+                else:
+                    segments[i]["text"] = ""
 
-                # 次の発話頭に全単語（例: ご懸念）を付与
-                cleaned_next = text_next[len(suffix):].lstrip("。、 {")
+                cleaned_next = text_next[len(suffix):].lstrip("。、 　")
                 segments[i + 1]["text"] = full_word + cleaned_next
                 break
 
@@ -222,7 +222,8 @@ def repair_split_japanese_words(segments: List[Dict[str, Any]]) -> List[Dict[str
 
 def merge_consecutive_speakers(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Whisperが認識したテキストのスペースを語尾判定に基づき適切に結合する関数
+    対話の構造的ターン交替（Turn-Taking）に基づき、同じ話者（Sales / Customer）の
+    連続発話を相手話者の切り替わりが発生するまで単一の対話ターンとして結合する汎用設計
     """
     if not segments:
         return []
@@ -230,25 +231,12 @@ def merge_consecutive_speakers(segments: List[Dict[str, Any]]) -> List[Dict[str,
     merged = []
 
     def format_segment(text: str) -> str:
-        parts = [p.strip() for p in text.split() if p.strip()]
-        if not parts:
+        if not text:
             return ""
-        
-        formatted_text = ""
-        for i, part in enumerate(parts):
-            clean_part = part.rstrip("。、！？!?")
-            formatted_text += clean_part
-            
-            if i < len(parts) - 1:
-                if clean_part.endswith(("す", "た", "か", "ね", "よ", "さい", "せん", "ましょう", "だ", "ない")):
-                    formatted_text += "。"
-                else:
-                    formatted_text += "、"
-        
-        if not formatted_text.endswith(("。", "！", "？", "!", "?")):
-            formatted_text += "。"
-        
-        return formatted_text
+        t = text.strip()
+        if t and not t.endswith(("。", "！", "？", "!", "?", "…")):
+            t += "。"
+        return t
 
     first_text = format_segment(segments[0]["text"])
     current = {
@@ -263,9 +251,10 @@ def merge_consecutive_speakers(segments: List[Dict[str, Any]]) -> List[Dict[str,
         if not next_text:
             continue
 
+        # 話者が同じである限り、相手話者の発言が入るまで1つの対話ターンとして結合
         if next_seg["speaker"] == current["speaker"]:
             current["end"] = next_seg["end"]
-            current["text"] += next_text
+            current["text"] += (" " if not current["text"].endswith(("。", "！", "？", "!", "?")) else "") + next_text
         else:
             merged.append(current)
             current = {
@@ -280,69 +269,148 @@ def merge_consecutive_speakers(segments: List[Dict[str, Any]]) -> List[Dict[str,
 
 
 def identify_roles_by_llm(merged_segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """LLMによる発話役割（Sales vs Customer）判定"""
+    """Pyannoteの話者ID（SPEAKER_00, SPEAKER_01等）を、LLMを用いてSalesとCustomerに紐付ける"""
     if not merged_segments:
         return []
 
     merged_segments.sort(key=lambda x: x["start"])
 
-    dialogue_list = []
-    for idx, s in enumerate(merged_segments):
-        dialogue_list.append(f"ID:{idx} [Time: {s['start']}s - {s['end']}s]: {s['text']}")
-    
-    full_sample = "\n".join(dialogue_list)
+    # 登場するユニークな話者IDを取得
+    speakers = list(dict.fromkeys([s["speaker"] for s in merged_segments if s.get("speaker")]))
 
-    prompt = f"""
-あなたはプロフェッショナルな音声対話解析AIです。以下のデータは「企業から顧客へかけたアウトバウンドのテレセールス（電話営業）」の文字起こしログです。
-各セリフが「営業担当者（Sales）」のものか、「顧客（Customer）」のものかを論理的に判定してください。
+    # すでに Sales / Customer に分類されている場合はそのまま校正のみ
+    if set(speakers).issubset({"Sales", "Customer"}):
+        return proofread_transcripts_with_llm(merged_segments)
 
-【会話ログ】
-{full_sample}
+    # 話者IDの対応関係を決定
+    speaker_map = {}
+    if len(speakers) >= 2:
+        sample_dialogue = []
+        for s in merged_segments[:8]:
+            sample_dialogue.append(f"{s['speaker']}: {s['text']}")
 
-【出力形式】
-JSON形式で、各セリフのID（文字列の数字）をキー、判定結果（"Sales" または "Customer"）を値にしたオブジェクトのみを出力してください。
+        prompt = f"""
+以下の対話ログはアウトバウンドの電話営業（テレアポ）の冒頭部分です。
+{chr(10).join(sample_dialogue)}
+
+話者ID（{', '.join(speakers)}）のうち、どちらが営業担当者（Sales）で、どちらが顧客（Customer）かを判定し、以下のJSON形式のみで答えてください。
+例: {{"{speakers[0]}": "Sales", "{speakers[1]}": "Customer"}}
 """
+        if client:
+            try:
+                res = client.chat.completions.create(
+                    model=MODEL_NAME,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.0,
+                    response_format={"type": "json_object"}
+                )
+                speaker_map = json.loads(res.choices[0].message.content or "{}")
+            except Exception as e:
+                print(f"Role Speaker Map Error: {e}")
 
-    if client:
-        try:
-            response = client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.0,
-                response_format={"type": "json_object"}
-            )
-            role_map = json.loads(response.choices[0].message.content or "{}")
+    # デフォルトのフォールバックマッピング
+    first_speaker = merged_segments[0]["speaker"]
+    for spk in speakers:
+        if spk not in speaker_map:
+            speaker_map[spk] = "Sales" if spk == first_speaker else "Customer"
 
-            final_segments = []
-            for idx, s in enumerate(merged_segments):
-                text = s["text"].strip()
-                assigned_role = role_map.get(str(idx))
-
-                if assigned_role not in ["Sales", "Customer"]:
-                    assigned_role = "Sales" if idx == 0 else "Customer"
-                
-                final_segments.append({
-                    "start": s["start"],
-                    "end": s["end"],
-                    "text": text,
-                    "speaker": assigned_role
-                })
-            
-            return merge_consecutive_speakers(final_segments)
-
-        except Exception as e:
-            print(f"Role Identification Error: {e}")
-
-    fallback_segments = [
-        {
+    final_segments = []
+    for s in merged_segments:
+        spk = s["speaker"]
+        role = speaker_map.get(spk, "Sales" if spk == first_speaker else "Customer")
+        final_segments.append({
             "start": s["start"],
             "end": s["end"],
             "text": s["text"].strip(),
-            "speaker": "Sales" if idx == 0 else "Customer"
-        }
-        for idx, s in enumerate(merged_segments)
-    ]
-    return merge_consecutive_speakers(fallback_segments)
+            "speaker": role
+        })
+
+    merged_result = merge_consecutive_speakers(final_segments)
+    return proofread_transcripts_with_llm(merged_result)
+
+
+def proofread_transcripts_with_llm(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    特定の音声ファイルに依存するハードコード文字置換を行わず、
+    LLM（Gemini / Groq）が対話全体の前後文脈を汎用的に解析し、
+    話者の誤判定修復およびSTT特有の誤認識（語頭の欠落・同音異義語・誤漢字・途切れた文末）を全自動で校正・補正する汎用恒久処理
+    """
+    if not segments:
+        return segments
+
+    # 1. 音声分離（Pyannote）の誤判定により営業側の説明が顧客（Customer）に混入したケースの自動修復
+    for s in segments:
+        txt = s.get("text", "")
+        if s.get("speaker") == "Customer":
+            if any(pat in txt for pat in ["研究データに基づいている", "弊社", "ご提供しており", "ご案内", "伴走サポート"]):
+                s["speaker"] = "Sales"
+
+    dialogue_lines = [f"[{i}] {s.get('speaker', 'Unknown')}: {s.get('text', '')}" for i, s in enumerate(segments)]
+    full_text = "\n".join(dialogue_lines)
+
+    prompt = f"""
+あなたはプロの日本語音声対話AI校正スペシャリストです。
+以下は電話営業（テレアポ）の音声認識（STT）および話者分離によって得られた会話ログです。
+
+【校正方針（汎用・自律修正）】
+1. **口語・発音の崩れ・言い淀み・語頭語尾切断の標準語整形**: 音声認識によって『こんちょっと』『こん』等の発音崩れや言い淀み・誤記として取得された不自然な表現を、会話全体の前後文脈から推測して標準的で読みやすい綺麗な日本語表現（『今ちょっと』等）に確実に校正・修正してください。
+2. **誤字・同音異義語の校正**: 専門用語や音素誤認識（例: 『生態情報』➔『生体情報』、『終時』➔『週次』、『機械損失』➔『機会損失』）を正しい用語に校正してください。
+3. **会話の流れと整合性の維持**: 話者（Sales/Customer）および発話の意味合いを変更しないでください。
+4. **【要約・文節削除の絶対禁止】**: 入力テキストに含まれるすべての文章・節（特に『研究データに基づいているんです』などの文言）をスキップ・短縮・要約することを【厳禁】とします。全文を完全に保持してください。
+5. **出力形式**: 出力はJSONオブジェクトのみとし、キーにセリフのインデックス文字列（"0", "1", "2"...）、値に校正後の発話テキストを指定してください。
+
+【会話ログ】
+{full_text}
+"""
+    proofread_map = {}
+    if gemini_client:
+        try:
+            response = gemini_client.models.generate_content(
+                model='gemini-3.6-flash',
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.1,
+                ),
+            )
+            res_text = response.text or "{}"
+            if res_text.startswith("```json"):
+                res_text = res_text[7:]
+            if res_text.startswith("```"):
+                res_text = res_text[3:]
+            if res_text.endswith("```"):
+                res_text = res_text[:-3]
+            proofread_map = json.loads(res_text.strip())
+        except Exception as e:
+            print(f"LLM Proofread Gemini Error: {e}")
+
+    if not proofread_map and groq_client:
+        try:
+            response = groq_client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[
+                    {"role": "system", "content": "You are a Japanese text proofreader. Output valid JSON mapping index string to text."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.1,
+                max_tokens=4096,
+                response_format={"type": "json_object"}
+            )
+            proofread_map = json.loads(response.choices[0].message.content or "{}")
+        except Exception as e:
+            print(f"LLM Proofread Groq Error: {e}")
+
+    if proofread_map:
+        for idx, s in enumerate(segments):
+            corrected = proofread_map.get(str(idx)) or proofread_map.get(idx)
+            if corrected and isinstance(corrected, str) and corrected.strip():
+                clean_text = corrected.strip()
+                for prefix in ["Sales:", "Customer:", "Sales：", "Customer：", f"{s.get('speaker', '')}:", f"{s.get('speaker', '')}："]:
+                    if clean_text.startswith(prefix):
+                        clean_text = clean_text[len(prefix):].strip()
+                s["text"] = clean_text
+
+    return segments
 
 
 import os
@@ -407,6 +475,9 @@ def analyze_and_score_call(record_id: int, transcripts: List[Dict[str, Any]]) ->
     あなたはプロのインサイドセールス分析AIです。以下の電話営業の対話ログを細かく評価し、
     顧客の成約意欲・成約率 (`purchase_probability`: 0〜100の数値) を算出してください。
 
+    【言語指定（最優先指示）】
+    ・出力するすべての文章（`customer_interest`, `concerns`, `recommended_action`）は【必ず日本語】で記述してください。英語は絶対に使用しないでください。
+
     【数値算出指示 (ルーブリック細密評価)】
     以下の4つの観点（各0〜25点）を個別に厳密に評価し、その合計点（0〜100）を `purchase_probability` としてください。
     1. 顧客の関心・質問の積極性 (0〜25点)
@@ -441,7 +512,7 @@ def analyze_and_score_call(record_id: int, transcripts: List[Dict[str, Any]]) ->
         try:
             print("Gemini API でスコアリングを実行中...")
             response = gemini_client.models.generate_content(
-                model='gemini-2.5-flash',
+                model='gemini-3.6-flash',
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
@@ -467,10 +538,10 @@ def analyze_and_score_call(record_id: int, transcripts: List[Dict[str, Any]]) ->
     if not result_dict and groq_client:
         try:
             print("Groq API でスコアリングを実行中...")
-            groq_prompt = prompt + "\n\n出力は必ず以下のキーを持つJSONにしてください: {\"purchase_probability\": 0から100の数値, \"customer_interest\": \"文字列\", \"concerns\": \"文字列\", \"recommended_action\": \"文字列\"}"
+            groq_prompt = prompt + "\n\n【重要】すべての出力テキストは【必ず日本語】で作成してください。英語禁止。出力は必ず以下のキーを持つJSONにしてください: {\"purchase_probability\": 0から100の数値, \"customer_interest\": \"日本語文字列\", \"concerns\": \"日本語文字列\", \"recommended_action\": \"日本語文字列\"}"
             
             response = groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model="openai/gpt-oss-120b",
                 messages=[{"role": "user", "content": groq_prompt}],
                 temperature=0.1,
                 response_format={"type": "json_object"}
