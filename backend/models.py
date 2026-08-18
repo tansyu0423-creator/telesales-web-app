@@ -1,45 +1,46 @@
 from sqlalchemy import Column, Integer, String, Text, DateTime, Float, ForeignKey
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, Mapped, mapped_column
 try:
     from .database import Base
 except ImportError:
     from database import Base
 from datetime import datetime, timezone
+from typing import List, Optional
 
 class CallRecord(Base):
     __tablename__ = "call_records"
 
-    id = Column(Integer, primary_key=True, index=True)
-    sales_code = Column(String(50), index=True) 
-    customer_phone = Column(String(20))         
-    call_duration = Column(Integer)             
-    audio_file_path = Column(String(255))       
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    sales_code: Mapped[str] = mapped_column(String(50), index=True) 
+    customer_phone: Mapped[str] = mapped_column(String(20))         
+    call_duration: Mapped[int] = mapped_column(Integer)             
+    audio_file_path: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)       
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
-    transcripts = relationship("Transcript", back_populates="call_record", lazy="selectin")
-    analysis = relationship("AnalysisResult", back_populates="call_record", uselist=False, lazy="selectin")
+    transcripts: Mapped[List["Transcript"]] = relationship("Transcript", back_populates="call_record", cascade="all, delete-orphan", lazy="selectin", order_by="Transcript.start_time")
+    analysis: Mapped[Optional["AnalysisResult"]] = relationship("AnalysisResult", back_populates="call_record", uselist=False, lazy="selectin")
 
 class Transcript(Base):
     __tablename__ = "transcripts"
 
-    id = Column(Integer, primary_key=True, index=True)
-    call_record_id = Column(Integer, ForeignKey("call_records.id"))
-    speaker = Column(String(20)) 
-    text = Column(Text)          
-    start_time = Column(Float)   
-    end_time = Column(Float)     
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    call_record_id: Mapped[int] = mapped_column(Integer, ForeignKey("call_records.id"))
+    speaker: Mapped[str] = mapped_column(String(20)) 
+    text: Mapped[str] = mapped_column(Text)          
+    start_time: Mapped[float] = mapped_column(Float)   
+    end_time: Mapped[float] = mapped_column(Float)     
 
-    call_record = relationship("CallRecord", back_populates="transcripts")
+    call_record: Mapped["CallRecord"] = relationship("CallRecord", back_populates="transcripts")
 
 class AnalysisResult(Base):
     __tablename__ = "analysis_results"
 
-    id = Column(Integer, primary_key=True, index=True)
-    call_record_id = Column(Integer, ForeignKey("call_records.id"), unique=True)
-    rank = Column(String(5))             
-    purchase_probability = Column(Float) 
-    customer_interest = Column(Text)     
-    concerns = Column(Text)              
-    recommended_action = Column(Text)    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    call_record_id: Mapped[int] = mapped_column(Integer, ForeignKey("call_records.id"), unique=True)
+    rank: Mapped[str] = mapped_column(String(5))             
+    purchase_probability: Mapped[float] = mapped_column(Float) 
+    customer_interest: Mapped[str] = mapped_column(Text)     
+    concerns: Mapped[str] = mapped_column(Text)              
+    recommended_action: Mapped[str] = mapped_column(Text)    
 
-    call_record = relationship("CallRecord", back_populates="analysis")
+    call_record: Mapped["CallRecord"] = relationship("CallRecord", back_populates="analysis")

@@ -15,9 +15,14 @@ const error = ref('')
 const isActionLoading = ref(false)
 const audioPlayerRef = ref(null)
 
-const seekAudioTo = (startTime) => {
+const sortedTranscripts = computed(() => {
+  if (!record.value || !record.value.transcripts) return []
+  return record.value.transcripts.slice().sort((a, b) => (a.start_time || 0) - (b.start_time || 0))
+})
+
+const seekAudioTo = (startTime, endTime = null) => {
   if (audioPlayerRef.value && typeof audioPlayerRef.value.seekToAndPlay === 'function') {
-    audioPlayerRef.value.seekToAndPlay(startTime)
+    audioPlayerRef.value.seekToAndPlay(startTime, endTime)
   }
 }
 
@@ -194,41 +199,7 @@ const getRankBadgeClass = (rank) => {
   }
 }
 
-const getRepairedTranscripts = (transcripts) => {
-  if (!transcripts || transcripts.length === 0) return []
-  const result = JSON.parse(JSON.stringify(transcripts))
-  
-  const splitRules = [
-    { prefix: "ご懸", suffix: "念", fullWord: "ご懸念" },
-    { prefix: "ご関", suffix: "心", fullWord: "ご関心" },
-    { prefix: "ご確", suffix: "認", fullWord: "ご確認" },
-    { prefix: "ご対", suffix: "応", fullWord: "ご対応" },
-    { prefix: "お問", suffix: "い合わせ", fullWord: "お問い合わせ" },
-    { prefix: "お問", suffix: "合せ", fullWord: "お問い合わせ" },
-    { prefix: "お世", suffix: "話", fullWord: "お世話" },
-    { prefix: "ありが", suffix: "とう", fullWord: "ありがとう" }
-  ]
-  
-  for (let i = 0; i < result.length - 1; i++) {
-    const textCurr = (result[i].text || "").replace(/[。、 　]+$/, "")
-    const textNext = (result[i + 1].text || "").replace(/^[。、 　]+/, "")
-    
-    for (const rule of splitRules) {
-      if (textCurr.endsWith(rule.prefix) && textNext.startsWith(rule.suffix)) {
-        let cleanedCurr = textCurr.slice(0, -rule.prefix.length).replace(/[。、 　]+$/, "")
-        if (!/[。！？!?]$/.test(cleanedCurr)) {
-          cleanedCurr += "。"
-        }
-        result[i].text = cleanedCurr
-        
-        const cleanedNext = textNext.slice(rule.suffix.length).replace(/^[。、 　]+/, "")
-        result[i + 1].text = rule.fullWord + cleanedNext
-        break
-      }
-    }
-  }
-  return result
-}
+
 
 onMounted(() => {
   fetchRecordDetail()
@@ -465,9 +436,9 @@ onMounted(() => {
 
         <div v-else class="flex flex-col gap-3 max-h-[600px] overflow-y-auto pr-2">
           <div 
-            v-for="t in getRepairedTranscripts(record.transcripts)" 
+            v-for="t in sortedTranscripts" 
             :key="t.id" 
-            @click="seekAudioTo(t.start_time)"
+            @click="seekAudioTo(t.start_time, t.end_time)"
             :class="[
               'p-4 rounded-xl text-xs border leading-relaxed cursor-pointer transition-all hover:scale-[1.01] shadow-sm group',
               t.speaker === 'Sales' 

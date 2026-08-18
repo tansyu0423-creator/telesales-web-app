@@ -94,7 +94,7 @@ Groq Whisper および Pyannote / Llama 3 によって処理された時系列�
 ---
 
 ### 4.3. `analysis_results` テーブル（AIスコアリング・分析結果）
-Gemini 2.0 Flash の Structured Output により抽出されたランク・成約率・関心点・懸念点・推奨アクションを保存する。
+Gemini 3.6 Flash の Structured Output により抽出されたランク・成約率・関心点・懸念点・推奨アクションを保存する。
 
 | カラム名 | 物理名 | データ型 | 制約 | 説明 |
 | :--- | :--- | :--- | :--- | :--- |
@@ -108,8 +108,10 @@ Gemini 2.0 Flash の Structured Output により抽出されたランク・成�
 
 ---
 
-## 5. リレーションおよび削除カスケード方針
+## 5. リレーションおよび削除カスケード・並び順方針
 - **`call_records` (1) ➔ `transcripts` (N)**:
-  - 親 `call_record` が削除された場合、関連する `transcripts` も連動して削除される（`CASCADE DELETE`）。
+  - 親 `call_record` が削除された場合、関連する `transcripts` も連動して削除される（`cascade="all, delete-orphan"`）。
+  - SQLAlchemy ORM モデルレベルで `order_by="Transcript.start_time"` を指定し、APIおよびUIでの取得時に常に厳格な発言開始時間の昇順（0.0s〜N.Ns）でソート返却されることを保証。
+  - 再解析時は既存の `transcripts` を全削除（`DELETE SQL`）した上で挿入することで、重複蓄積を完全に防止。
 - **`call_records` (1) ➔ `analysis_results` (1)**:
   - `call_record_id` に `UNIQUE` 制約を付与し、1つの通話に対して常に最新のスコアリング結果が1件のみ存在する状態を保つ（Upsert 制御）。

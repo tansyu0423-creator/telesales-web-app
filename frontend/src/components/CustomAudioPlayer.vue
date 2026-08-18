@@ -15,6 +15,7 @@ const duration = ref(0)
 const volume = ref(1)
 const isMuted = ref(false)
 const showVolumeSlider = ref(false)
+const stopTime = ref(null)
 
 const formatTime = (seconds) => {
   if (isNaN(seconds) || !isFinite(seconds) || seconds < 0) return '0:00'
@@ -25,6 +26,7 @@ const formatTime = (seconds) => {
 
 const togglePlay = () => {
   if (!audioRef.value) return
+  stopTime.value = null
   if (isPlaying.value) {
     audioRef.value.pause()
   } else {
@@ -35,6 +37,11 @@ const togglePlay = () => {
 const onTimeUpdate = () => {
   if (audioRef.value) {
     currentTime.value = audioRef.value.currentTime
+    if (stopTime.value !== null && audioRef.value.currentTime >= stopTime.value) {
+      audioRef.value.pause()
+      stopTime.value = null
+      isPlaying.value = false
+    }
   }
 }
 
@@ -47,10 +54,12 @@ const onLoadedMetadata = () => {
 const onEnded = () => {
   isPlaying.value = false
   currentTime.value = 0
+  stopTime.value = null
 }
 
 const seek = (e) => {
   if (!audioRef.value) return
+  stopTime.value = null
   const time = parseFloat(e.target.value)
   audioRef.value.currentTime = time
   currentTime.value = time
@@ -79,21 +88,34 @@ const toggleMute = () => {
 watch(() => props.src, () => {
   isPlaying.value = false
   currentTime.value = 0
+  stopTime.value = null
   if (audioRef.value) {
     audioRef.value.load()
   }
 })
 
-const seekToAndPlay = (seconds) => {
+const seekToAndPlay = async (seconds, stopAt = null) => {
   if (!audioRef.value) return
   const targetTime = Math.max(0, parseFloat(seconds) || 0)
-  audioRef.value.currentTime = targetTime
-  currentTime.value = targetTime
-  audioRef.value.play().then(() => {
-    isPlaying.value = true
-  }).catch((err) => {
+  if (stopAt !== null && stopAt !== undefined && parseFloat(stopAt) > targetTime) {
+    stopTime.value = parseFloat(stopAt)
+  } else {
+    stopTime.value = null
+  }
+  
+  try {
+    if (audioRef.value.readyState === 0) {
+      audioRef.value.load()
+    }
+    audioRef.value.currentTime = targetTime
+    currentTime.value = targetTime
+    if (audioRef.value.paused) {
+      await audioRef.value.play()
+      isPlaying.value = true
+    }
+  } catch (err) {
     console.error("Audio playback error:", err)
-  })
+  }
 }
 
 defineExpose({

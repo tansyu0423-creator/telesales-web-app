@@ -32,10 +32,10 @@ const setAudioPlayerRef = (id, el) => {
   }
 }
 
-const seekAudioTo = (recordId, startTime) => {
+const seekAudioTo = (recordId, startTime, endTime = null) => {
   const player = audioPlayerRefs.value[recordId]
   if (player && typeof player.seekToAndPlay === 'function') {
-    player.seekToAndPlay(startTime)
+    player.seekToAndPlay(startTime, endTime)
   }
 }
 
@@ -81,6 +81,11 @@ const getRankFilterButtonClass = (rank, isSelected) => {
     return 'bg-sky-500 text-slate-950 border-sky-400 font-extrabold shadow-md shadow-sky-500/20'
   }
   return 'bg-slate-900/80 text-slate-300 border-slate-700 hover:border-slate-500 hover:text-white'
+}
+
+const getSortedTranscripts = (transcripts) => {
+  if (!transcripts || !Array.isArray(transcripts)) return []
+  return transcripts.slice().sort((a, b) => (a.start_time || 0) - (b.start_time || 0))
 }
 
 const getTalkRatio = (transcripts) => {
@@ -807,16 +812,16 @@ onUnmounted(() => {
                     <div 
                       :data-gauge-id="record.id"
                       :data-probability="record.analysis.purchase_probability"
-                      class="relative flex items-center justify-center w-[36px] h-[36px] bg-slate-950 rounded-full border border-slate-800 p-0.5 shadow-sm"
+                      class="relative flex items-center justify-center w-[52px] h-[52px] bg-slate-950 rounded-full border border-slate-700/80 p-0.5 shadow-md shadow-sky-500/10"
                     >
                       <svg class="w-full h-full -rotate-90" viewBox="0 0 64 64">
-                        <circle cx="32" cy="32" r="25" stroke="#334155" stroke-width="6" fill="none" />
+                        <circle cx="32" cy="32" r="25" stroke="#334155" stroke-width="5" fill="none" />
                         <circle
                           cx="32"
                           cy="32"
                           r="25"
                           :stroke="`url(#gradient-t-${record.id})`"
-                          stroke-width="6"
+                          stroke-width="5"
                           stroke-linecap="round"
                           fill="none"
                           stroke-dasharray="157.08"
@@ -831,7 +836,7 @@ onUnmounted(() => {
                         </defs>
                       </svg>
                       <div class="absolute inset-0 flex items-center justify-center">
-                        <span class="text-[11px] font-black text-white font-mono">
+                        <span class="text-[12px] font-black text-white font-mono tracking-tight">
                           {{ gaugeValueMap[`t-${record.id}`] || 0 }}%
                         </span>
                       </div>
@@ -949,9 +954,9 @@ onUnmounted(() => {
                       </div>
                       <div v-else class="flex flex-col gap-2.5 max-h-80 overflow-y-auto pr-2 w-full">
                         <div 
-                          v-for="t in record.transcripts" 
+                          v-for="t in getSortedTranscripts(record.transcripts)" 
                           :key="t.id" 
-                          @click="seekAudioTo(record.id, t.start_time)"
+                          @click="seekAudioTo(record.id, t.start_time, t.end_time)"
                           :class="[
                             'p-3 rounded-xl max-w-[85%] md:max-w-[70%] text-xs border leading-relaxed break-words cursor-pointer transition-all hover:scale-[1.01] shadow-sm group',
                             t.speaker === 'Sales' 
@@ -1187,9 +1192,9 @@ onUnmounted(() => {
               </div>
               <div v-else class="flex flex-col gap-2 max-h-72 overflow-y-auto pr-1 w-full">
                 <div 
-                  v-for="t in record.transcripts" 
+                  v-for="t in getSortedTranscripts(record.transcripts)" 
                   :key="t.id" 
-                  @click="seekAudioTo(record.id, t.start_time)"
+                  @click="seekAudioTo(record.id, t.start_time, t.end_time)"
                   :class="[
                     'p-2.5 rounded-lg max-w-[85%] text-xs border leading-relaxed break-words cursor-pointer transition-all hover:scale-[1.01] shadow-sm group',
                     t.speaker === 'Sales' 

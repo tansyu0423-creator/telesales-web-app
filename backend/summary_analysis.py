@@ -67,7 +67,7 @@ def summarize_call(transcripts: List[Dict[str, Any]]) -> Dict[str, Any]:
         try:
             print("Gemini API で要約分析を実行中...")
             response = gemini_client.models.generate_content(
-                model='gemini-2.5-flash',
+                model='gemini-3.6-flash',
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
@@ -90,7 +90,7 @@ def summarize_call(transcripts: List[Dict[str, Any]]) -> Dict[str, Any]:
         try:
             print("Groq API で要約分析を実行中...")
             response = groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model="openai/gpt-oss-120b",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
                 response_format={"type": "json_object"}
