@@ -12,7 +12,7 @@ except ImportError:
     from config import settings
     import schemas
 
-client = Groq(api_key=settings.groq_api_key) if settings.groq_api_key else None
+client = Groq(api_key=settings.groq_api_key, timeout=30.0) if settings.groq_api_key else None
 MODEL_NAME = "llama-3.3-70b-versatile"
 
 gemini_client = genai.Client(api_key=settings.gemini_api_key) if settings.gemini_api_key else None

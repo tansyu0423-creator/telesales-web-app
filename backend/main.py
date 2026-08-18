@@ -264,11 +264,14 @@ async def upload_audio(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"ストレージエラー: {str(e)}")
 
 # ---------------------------------------------
-# 音声ファイルストリーミング再生APIを追加
+# 音声ファイルストリーミング再生API
 # ---------------------------------------------
 @app.get("/audio/{filename}", tags=["Audio Stream"])
 def stream_audio(filename: str):
     """MinIOから音声ファイルをダウンロード/ストリーミング再生するAPI"""
+    if ".." in filename or "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="無効なファイル名です")
+
     try:
         response = minio_client.get_object(settings.minio_bucket_name, filename)
         content_type = response.headers.get("content-type") or ("audio/mpeg" if filename.endswith(".mp3") else "audio/wav")
@@ -499,24 +502,20 @@ async def upload_and_transcribe_record(
         )
         db_record = await crud.create_call_record(db=db, record=record_in)
 
-        # 3. Day 8/9のフル自動パイプライン（または文字起こしタスク）をバックグラウンドで自動発火！
+        # 全自動AI解析パイプラインをバックグラウンドで自動発火
         task = tasks.full_pipeline_task.delay(db_record.id)
 
-        # フロントエンドの store.setTaskState('processing', data.task_id) が受け取れるように返す
-        # ※レスポンスに task_id を含めるのがポイントです
-        # （response_modelが CallRecord のため、もし task_id も返したい場合は辞書を返すかスキーマを調整します）
-        
-        # FastAPIのresponse_modelに合わせて辞書を返すための工夫
-        # 返り値に task_id を持たせるためのカスタムレスポンス
-        return {
-            "id": db_record.id,
-            "sales_code": db_record.sales_code,
-            "customer_phone": db_record.customer_phone,
-            "call_duration": db_record.call_duration,
-            "audio_file_path": db_record.audio_file_path,
-            "created_at": db_record.created_at,
-            "task_id": task.id
-        }
+        return schemas.CallRecord(
+            id=db_record.id,
+            sales_code=db_record.sales_code,
+            customer_phone=db_record.customer_phone,
+            call_duration=db_record.call_duration,
+            audio_file_path=db_record.audio_file_path,
+            created_at=db_record.created_at,
+            transcripts=[],
+            analysis=None,
+            task_id=task.id
+        )
 
     except S3Error as e:
         raise HTTPException(status_code=500, detail=f"ストレージエラー: {str(e)}")

@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 groq_api_key = os.getenv("GROQ_API_KEY")
-client = Groq(api_key=groq_api_key) if groq_api_key else None
+client = Groq(api_key=groq_api_key, timeout=30.0) if groq_api_key else None
 
 
 def transcribe_audio(file_path: str):
@@ -61,18 +61,19 @@ def transcribe_audio(file_path: str):
         while current_frame < n_frames:
             frames_to_read = min(frames_per_chunk, n_frames - current_frame)
             chunk_data = wf.readframes(frames_to_read)
+            chunk_path = None
             
-            # 切り出した音声を一時ファイルに保存
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_chunk:
-                chunk_path = temp_chunk.name
-                with wave.open(chunk_path, 'wb') as chunk_wf:
-                    chunk_wf.setnchannels(n_channels)
-                    chunk_wf.setsampwidth(sampwidth)
-                    chunk_wf.setframerate(framerate)
-                    chunk_wf.writeframes(chunk_data)
-            
-            # APIにリクエスト送信
             try:
+                # 切り出した音声を一時ファイルに保存
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_chunk:
+                    chunk_path = temp_chunk.name
+                    with wave.open(chunk_path, 'wb') as chunk_wf:
+                        chunk_wf.setnchannels(n_channels)
+                        chunk_wf.setsampwidth(sampwidth)
+                        chunk_wf.setframerate(framerate)
+                        chunk_wf.writeframes(chunk_data)
+                
+                # APIにリクエスト送信
                 print(f"Transcribing chunk {chunk_index + 1}...")
                 with open(chunk_path, "rb") as file:
                     chunk_transcription = client.audio.transcriptions.create(
@@ -102,9 +103,11 @@ def transcribe_audio(file_path: str):
                             'start': getattr(w, 'start', 0.0) + offset,
                             'end': getattr(w, 'end', 0.0) + offset
                         })
-                        
+            except Exception as e:
+                print(f"Chunk {chunk_index + 1} transcription error: {e}")
             finally:
-                os.remove(chunk_path)  # 使い終わった分割ファイルを削除
+                if chunk_path and os.path.exists(chunk_path):
+                    os.remove(chunk_path)  # 使い終わった分割ファイルを必ず削除
                 
             current_frame += frames_to_read
             chunk_index += 1
