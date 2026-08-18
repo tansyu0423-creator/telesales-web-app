@@ -235,7 +235,7 @@ def full_pipeline_task(self, record_id: int) -> Dict[str, Any]:
     t_start = time.perf_counter()
     try:
         safe_update_state(self, 'PROGRESS', {'step': 1, 'phase': 'stt'})
-        t_res = transcribe_and_diarize_task(record_id)  # type: ignore
+        t_res = transcribe_and_diarize_task(record_id)
         if isinstance(t_res, dict) and t_res.get("status") == "failure":
             return {
                 "status": "failure",
@@ -243,7 +243,7 @@ def full_pipeline_task(self, record_id: int) -> Dict[str, Any]:
                 "error": t_res.get("error", "文字起こし処理に失敗しました。")
             }
         safe_update_state(self, 'PROGRESS', {'step': 3, 'phase': 'scoring'})
-        s_res = score_record_task(record_id)  # type: ignore
+        s_res = score_record_task(record_id)
         if isinstance(s_res, dict) and s_res.get("status") == "failure":
             return {
                 "status": "failure",
