@@ -1,6 +1,7 @@
 import os
 import sys
 import tempfile
+import time
 import asyncio
 from typing import List, Dict, Any
 
@@ -44,13 +45,21 @@ def _run_async(coro):
         return asyncio.run(coro)
 
 
-@celery_app.task(bind=True, name="backend.tasks.transcribe_and_diarize_task")
-def transcribe_and_diarize_task(self, record_id: int) -> Dict[str, Any]:
+def safe_update_state(task_self, state: str, meta: dict):
+    if task_self and getattr(task_self, "request", None) and getattr(task_self.request, "id", None):
+        try:
+            task_self.update_state(state=state, meta=meta)
+        except Exception:
+            pass
+
+
+def _run_transcribe_and_diarize(record_id: int, task_ctx=None) -> Dict[str, Any]:
     """
-    音声をMinIOから取得し、STT + 話者分離 + LLM役割同定を実行してDBに保存するタスク
+    音声をMinIOから取得し、STT + 話者分離 + LLM役割同定を実行してDBに保存する実体処理
     """
     async def _async_transcribe() -> Dict[str, Any]:
         async with SessionLocal() as db:
+            t_start = time.perf_counter()
             record = await crud.get_call_record(db, record_id=record_id)
             if not record:
                 raise ValueError(f"Record ID {record_id} not found")
@@ -93,29 +102,50 @@ def transcribe_and_diarize_task(self, record_id: int) -> Dict[str, Any]:
                     ffmpeg_exe, "-y", "-i", raw_audio_path, 
                     "-ar", "16000", "-ac", "1", wav_audio_path
                 ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                t_convert = time.perf_counter() - t_start
 
                 # 3. Groq Whisper による文字起こし（変換した wav_audio_path を使う）
+                t_stt_start = time.perf_counter()
+                safe_update_state(task_ctx, 'PROGRESS', {'step': 1, 'phase': 'stt'})
                 transcription = stt.transcribe_audio(wav_audio_path)
+                t_stt = time.perf_counter() - t_stt_start
                 
-                words = getattr(transcription, 'words', [])
-                if not words and isinstance(transcription, dict):
-                    words = transcription.get('words', [])
-                
-                if not words:
-                    words = getattr(transcription, 'segments', [])
-                    if not words and isinstance(transcription, dict):
-                        words = transcription.get('segments', [])
+                segments_data = getattr(transcription, 'segments', [])
+                if not segments_data and isinstance(transcription, dict):
+                    segments_data = transcription.get('segments', [])
+
+                words_data = getattr(transcription, 'words', [])
+                if not words_data and isinstance(transcription, dict):
+                    words_data = transcription.get('words', [])
+
+                # 日本語音声において segments の方がテキスト網羅性が高い場合、segments を採用して文章カットを完全防止
+                words = words_data if words_data else segments_data
+                if segments_data and words_data:
+                    words_text_len = sum(len(str(w.get('word', w.get('text', '')) if isinstance(w, dict) else getattr(w, 'word', getattr(w, 'text', '')))) for w in words_data)
+                    seg_text_len = sum(len(str(s.get('text', '') if isinstance(s, dict) else getattr(s, 'text', ''))) for s in segments_data)
+                    if seg_text_len > words_text_len:
+                        words = segments_data
 
                 # 4. Pyannote による話者分離（変換した wav_audio_path を使う）
+                t_diar_start = time.perf_counter()
+                safe_update_state(task_ctx, 'PROGRESS', {'step': 2, 'phase': 'diarization'})
                 diarization_segments = diarization.diarize_audio(wav_audio_path)
+                t_diarize = time.perf_counter() - t_diar_start
 
-                # 5. 単語レベルのタイムスタンプ・マージ
+                # 5. 単語レベルのタイムスタンプ・マージ ＆ 6. LLM 役割同定
+                t_role_start = time.perf_counter()
                 merged_segments = llm_analysis.merge_whisper_and_diarization(words, diarization_segments)
-
-                # 6. LLM 役割同定
                 final_segments = llm_analysis.identify_roles_by_llm(merged_segments)
+                t_role = time.perf_counter() - t_role_start
+
+                t_total = time.perf_counter() - t_start
+                print(f"[Performance Profile] Record #{record_id} (Transcribe & Diarize): "
+                      f"Convert={t_convert:.2f}s, STT={t_stt:.2f}s, Diarize={t_diarize:.2f}s, "
+                      f"RoleID={t_role:.2f}s, Total={t_total:.2f}s")
 
                 # 7. DBクリア & 保存
+                from sqlalchemy import delete
+                await db.execute(delete(models.Transcript).where(models.Transcript.call_record_id == record_id))
                 record.transcripts.clear()
                 for seg in final_segments:
                     db.add(models.Transcript(
@@ -130,7 +160,14 @@ def transcribe_and_diarize_task(self, record_id: int) -> Dict[str, Any]:
                 return {
                     "status": "success",
                     "record_id": record_id,
-                    "transcript_count": len(final_segments)
+                    "transcript_count": len(final_segments),
+                    "execution_times": {
+                        "convert_sec": round(t_convert, 3),
+                        "stt_sec": round(t_stt, 3),
+                        "diarize_sec": round(t_diarize, 3),
+                        "role_id_sec": round(t_role, 3),
+                        "total_sec": round(t_total, 3)
+                    }
                 }
             finally:
                 # 使い終わった一時ファイルを両方とも削除
@@ -151,10 +188,13 @@ def transcribe_and_diarize_task(self, record_id: int) -> Dict[str, Any]:
         }
 
 
-@celery_app.task(bind=True, name="backend.tasks.score_record_task")
-def score_record_task(self, record_id: int) -> Dict[str, Any]:
+def _run_score_record(record_id: int, task_ctx=None) -> Dict[str, Any]:
+    """
+    文字起こしデータをもとにLLMスコアリングを実行してDBに保存する実体処理
+    """
     async def _async_score() -> Dict[str, Any]:
         async with SessionLocal() as db:
+            t_start = time.perf_counter()
             record = await crud.get_call_record(db, record_id=record_id)
             if not record:
                 raise ValueError(f"Record ID {record_id} not found")
@@ -170,15 +210,22 @@ def score_record_task(self, record_id: int) -> Dict[str, Any]:
 
             transcript_dicts = [{"speaker": t.speaker, "text": t.text} for t in transcripts]
 
+            safe_update_state(task_ctx, 'PROGRESS', {'step': 3, 'phase': 'scoring'})
             analysis_data = llm_analysis.analyze_and_score_call(record_id, transcript_dicts)
             saved_result = await crud.create_or_update_analysis_result(db, analysis_data)
+            t_score = time.perf_counter() - t_start
+
+            print(f"[Performance Profile] Record #{record_id} (Scoring): ScoreTime={t_score:.2f}s")
 
             return {
                 "status": "success",
                 "record_id": record_id,
                 "rank": saved_result.rank,
                 "purchase_probability": saved_result.purchase_probability,
-                "recommended_action": saved_result.recommended_action
+                "recommended_action": saved_result.recommended_action,
+                "execution_times": {
+                    "score_sec": round(t_score, 3)
+                }
             }
 
     try:
@@ -193,17 +240,28 @@ def score_record_task(self, record_id: int) -> Dict[str, Any]:
         }
 
 
+@celery_app.task(bind=True, name="backend.tasks.transcribe_and_diarize_task")
+def transcribe_and_diarize_task(self, record_id: int) -> Dict[str, Any]:
+    return _run_transcribe_and_diarize(record_id, task_ctx=self)
+
+
+@celery_app.task(bind=True, name="backend.tasks.score_record_task")
+def score_record_task(self, record_id: int) -> Dict[str, Any]:
+    return _run_score_record(record_id, task_ctx=self)
+
+
 @celery_app.task(bind=True, name="backend.tasks.full_pipeline_task")
 def full_pipeline_task(self, record_id: int) -> Dict[str, Any]:
+    t_start = time.perf_counter()
     try:
-        t_res = transcribe_and_diarize_task(record_id)
+        t_res = _run_transcribe_and_diarize(record_id, task_ctx=self)
         if isinstance(t_res, dict) and t_res.get("status") == "failure":
             return {
                 "status": "failure",
                 "record_id": record_id,
                 "error": t_res.get("error", "文字起こし処理に失敗しました。")
             }
-        s_res = score_record_task(record_id)
+        s_res = _run_score_record(record_id, task_ctx=self)
         if isinstance(s_res, dict) and s_res.get("status") == "failure":
             return {
                 "status": "failure",
@@ -211,11 +269,17 @@ def full_pipeline_task(self, record_id: int) -> Dict[str, Any]:
                 "transcribe_result": t_res,
                 "error": s_res.get("error", "AIスコアリングに失敗しました。")
             }
+        t_total = time.perf_counter() - t_start
+        print(f"[Performance Profile] Record #{record_id} (Full Pipeline Total): {t_total:.2f}s")
+
         return {
             "status": "success",
             "record_id": record_id,
             "transcribe_result": t_res,
-            "score_result": s_res
+            "score_result": s_res,
+            "execution_times": {
+                "full_pipeline_total_sec": round(t_total, 3)
+            }
         }
     except Exception as e:
         error_msg = f"パイプライン実行中に予期せぬエラーが発生しました: {str(e)}"

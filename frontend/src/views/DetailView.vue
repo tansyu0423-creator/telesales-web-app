@@ -15,9 +15,14 @@ const error = ref('')
 const isActionLoading = ref(false)
 const audioPlayerRef = ref(null)
 
-const seekAudioTo = (startTime) => {
+const sortedTranscripts = computed(() => {
+  if (!record.value || !record.value.transcripts) return []
+  return record.value.transcripts.slice().sort((a, b) => (a.start_time || 0) - (b.start_time || 0))
+})
+
+const seekAudioTo = (startTime, endTime = null) => {
   if (audioPlayerRef.value && typeof audioPlayerRef.value.seekToAndPlay === 'function') {
-    audioPlayerRef.value.seekToAndPlay(startTime)
+    audioPlayerRef.value.seekToAndPlay(startTime, endTime)
   }
 }
 
@@ -104,13 +109,15 @@ const handleTranscribe = async () => {
 const handleAnalyze = async () => {
   isActionLoading.value = true
   try {
-    const res = await api.post(`/records/${recordId}/score`)
-    if (res.data.task_id) {
+    const hasTranscripts = record.value && record.value.transcripts && record.value.transcripts.length > 0
+    const endpoint = hasTranscripts ? `/records/${recordId}/score` : `/records/${recordId}/pipeline`
+    const res = await api.post(endpoint)
+    if (res.data && res.data.task_id) {
       await pollTaskStatus(res.data.task_id)
     }
     await fetchRecordDetail()
   } catch (err) {
-    alert(err.response?.data?.detail || err.message || 'AIスコアリングに失敗しました')
+    alert(err.response?.data?.detail || err.message || 'AI解析に失敗しました')
   } finally {
     isActionLoading.value = false
   }
@@ -194,6 +201,8 @@ const getRankBadgeClass = (rank) => {
   }
 }
 
+
+
 onMounted(() => {
   fetchRecordDetail()
 })
@@ -233,19 +242,53 @@ onMounted(() => {
       </div>
     </div>
 
-    <!-- ローディング状態 -->
-    <div v-if="loading" class="text-center py-20 bg-slate-800/40 rounded-2xl border border-slate-800">
-      <div class="animate-pulse flex flex-col items-center gap-3">
-        <span class="text-3xl">⏳</span>
-        <span class="text-slate-400 font-medium">通話分析詳細データを読み込んでいます...</span>
+    <!-- スケルトンローダーUI (loading === true) -->
+    <div v-if="loading" class="space-y-6">
+      <!-- ヘッダーカード スケルトン -->
+      <div class="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-6 shadow-xl animate-pulse space-y-4">
+        <div class="flex justify-between items-center pb-4 border-b border-slate-700/60">
+          <div class="h-6 bg-slate-700 rounded-lg w-48"></div>
+          <div class="h-6 bg-slate-700 rounded-lg w-32"></div>
+        </div>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div class="h-14 bg-slate-900/60 rounded-xl"></div>
+          <div class="h-14 bg-slate-900/60 rounded-xl"></div>
+          <div class="h-14 bg-slate-900/60 rounded-xl"></div>
+          <div class="h-14 bg-slate-900/60 rounded-xl"></div>
+        </div>
+      </div>
+
+      <!-- スコアリング ＆ AIサマリー スケルトン -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div class="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-6 animate-pulse flex flex-col items-center justify-center space-y-3">
+          <div class="w-32 h-32 bg-slate-700/80 rounded-full"></div>
+          <div class="h-5 bg-slate-700 rounded w-24"></div>
+        </div>
+        <div class="lg:col-span-2 bg-slate-800/60 border border-slate-700/60 rounded-2xl p-6 animate-pulse space-y-3">
+          <div class="h-16 bg-slate-900/60 rounded-xl"></div>
+          <div class="h-16 bg-slate-900/60 rounded-xl"></div>
+          <div class="h-16 bg-slate-900/60 rounded-xl"></div>
+        </div>
       </div>
     </div>
 
-    <!-- エラー状態 -->
-    <div v-else-if="error" class="text-center py-16 bg-red-950/30 rounded-2xl border border-red-800/50 text-red-300 p-6">
-      <p class="text-lg font-bold mb-2">⚠️ エラーが発生しました</p>
-      <p class="text-sm mb-4">{{ error }}</p>
-      <button @click="router.push('/')" class="px-4 py-2 bg-red-800 text-white rounded-lg text-sm font-semibold">一覧へ戻る</button>
+    <!-- エラー表示 (error) -->
+    <div v-else-if="error" class="text-center py-12 bg-rose-950/60 border border-rose-800 rounded-2xl p-6 text-rose-100 shadow-xl space-y-4">
+      <div class="w-12 h-12 rounded-full bg-rose-900/80 border border-rose-600 flex items-center justify-center mx-auto text-xl font-bold">
+        ⚠️
+      </div>
+      <div>
+        <h3 class="text-base font-bold mb-1">通話詳細データの取得に失敗しました</h3>
+        <p class="text-xs text-rose-300 font-mono max-w-md mx-auto break-words">{{ error }}</p>
+      </div>
+      <div class="flex items-center justify-center gap-3 pt-2">
+        <button @click="fetchRecordDetail" class="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-xs font-bold transition-all shadow-md cursor-pointer">
+          🔄 再読み込み
+        </button>
+        <button @click="router.push('/')" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold border border-slate-700 cursor-pointer">
+          ← ダッシュボードへ戻る
+        </button>
+      </div>
     </div>
 
     <!-- 詳細コンテンツ -->
@@ -395,9 +438,9 @@ onMounted(() => {
 
         <div v-else class="flex flex-col gap-3 max-h-[600px] overflow-y-auto pr-2">
           <div 
-            v-for="t in record.transcripts" 
+            v-for="t in sortedTranscripts" 
             :key="t.id" 
-            @click="seekAudioTo(t.start_time)"
+            @click="seekAudioTo(t.start_time, t.end_time)"
             :class="[
               'p-4 rounded-xl text-xs border leading-relaxed cursor-pointer transition-all hover:scale-[1.01] shadow-sm group',
               t.speaker === 'Sales' 

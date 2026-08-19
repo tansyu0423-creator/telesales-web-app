@@ -118,7 +118,7 @@
             'bg-emerald-400': store.taskStatus === 'success',
             'bg-rose-500': store.taskStatus === 'error'
           }"></span>
-          <span>処理ステータス</span>
+          <span>AIパイプライン処理ステータス</span>
         </h2>
         <span class="text-xs font-mono px-2.5 py-0.5 rounded-full border" :class="{
           'bg-sky-950 border-sky-700 text-sky-300': store.taskStatus === 'processing' || store.taskStatus === 'uploading',
@@ -134,40 +134,136 @@
         <span class="text-sm font-medium">音声ファイルをサーバーに安全にアップロードしています...</span>
       </div>
 
-      <!-- 3段階ステップ進行ローディングアニメーション -->
-      <div v-else-if="store.taskStatus === 'processing'" class="space-y-4 py-2">
-        <div class="text-xs font-semibold text-sky-300 flex items-center gap-2 mb-1">
-          <span class="animate-spin h-4 w-4 border-2 border-sky-400 border-t-transparent rounded-full shrink-0"></span>
-          <span>AI解析パイプラインを実行中です（約10〜20秒で完了します）</span>
+      <!-- 3段階リアルタイム活性化ステップカード (SUCCESS時も全ステップ完了状態を保持して表示) -->
+      <div v-else-if="store.taskStatus === 'processing' || store.taskStatus === 'success'" class="space-y-4 py-2">
+        <div class="text-xs font-semibold flex items-center justify-between gap-2 mb-1" :class="store.taskStatus === 'success' ? 'text-emerald-300' : 'text-sky-300'">
+          <div class="flex items-center gap-2">
+            <span v-if="store.taskStatus === 'processing'" class="animate-spin h-4 w-4 border-2 border-sky-400 border-t-transparent rounded-full shrink-0"></span>
+            <span v-else class="text-base">🎉</span>
+            <span>{{ store.taskStatus === 'success' ? 'すべてのAI解析パイプラインが完了しました！' : 'AI解析を実行中です（音声の長さに応じて約1〜3分程度かかります）' }}</span>
+          </div>
+          <span class="font-mono text-[11px] px-2.5 py-0.5 rounded-md border font-bold" :class="store.taskStatus === 'success' ? 'bg-emerald-950 border-emerald-700 text-emerald-300' : 'bg-sky-950 border-sky-800 text-sky-300'">
+            Step {{ store.taskStatus === 'success' ? 3 : (activeStepIndex > 3 ? 3 : activeStepIndex) }} / 3
+          </span>
         </div>
-        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-          <div class="p-3 bg-slate-900 border border-sky-800 rounded-xl flex items-center gap-2.5">
-            <span class="w-6 h-6 rounded-full bg-sky-900 border border-sky-600 text-sky-300 flex items-center justify-center font-bold text-[10px] shrink-0 animate-pulse">1</span>
-            <div>
-              <div class="font-bold text-white">🎙 文字起こし (STT)</div>
-              <div class="text-[10px] text-slate-400">Groq Whisper (ja, t=0)</div>
-            </div>
-          </div>
-          <div class="p-3 bg-slate-900 border border-indigo-800 rounded-xl flex items-center gap-2.5">
-            <span class="w-6 h-6 rounded-full bg-indigo-900 border border-indigo-600 text-indigo-300 flex items-center justify-center font-bold text-[10px] shrink-0 animate-pulse">2</span>
-            <div>
-              <div class="font-bold text-white">👤 話者分離 ＆ 役割識別</div>
-              <div class="text-[10px] text-slate-400">Pyannote + Llama 3.3</div>
-            </div>
-          </div>
-          <div class="p-3 bg-slate-900 border border-purple-800 rounded-xl flex items-center gap-2.5">
-            <span class="w-6 h-6 rounded-full bg-purple-900 border border-purple-600 text-purple-300 flex items-center justify-center font-bold text-[10px] shrink-0 animate-pulse">3</span>
-            <div>
-              <div class="font-bold text-white">🤖 AIスコアリング</div>
-              <div class="text-[10px] text-slate-400">Gemini 2.0 Flash (Few-shot)</div>
-            </div>
-          </div>
-        </div>
-      </div>
 
-      <div v-else-if="store.taskStatus === 'success'" class="font-medium flex items-center space-x-2 py-2 text-emerald-200">
-        <span class="text-lg">🎉</span>
-        <span class="text-sm">解析が完了しました！自動的にダッシュボード画面へ移動します...</span>
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+          <!-- STEP 1: STT -->
+          <div 
+            :class="[
+              'p-3.5 rounded-xl border transition-all flex flex-col justify-between space-y-2',
+              activeStepIndex === 1 
+                ? 'bg-sky-950/90 border-sky-400 shadow-lg shadow-sky-500/20 ring-1 ring-sky-400' 
+                : activeStepIndex > 1
+                  ? 'bg-slate-900/90 border-emerald-600/80 text-emerald-200'
+                  : 'bg-slate-900/50 border-slate-800 opacity-50'
+            ]"
+          >
+            <div class="flex items-center justify-between">
+              <span 
+                :class="[
+                  'w-6 h-6 rounded-full flex items-center justify-center font-bold text-[10px] shrink-0 border',
+                  activeStepIndex === 1 ? 'bg-sky-500 text-slate-950 border-sky-300 animate-pulse font-extrabold' :
+                  activeStepIndex > 1 ? 'bg-emerald-500 text-slate-950 border-emerald-400 font-bold' : 'bg-slate-800 text-slate-400 border-slate-700'
+                ]"
+              >
+                {{ activeStepIndex > 1 ? '✓' : '1' }}
+              </span>
+              <span 
+                :class="[
+                  'text-[9px] font-bold px-2 py-0.5 rounded-full border',
+                  activeStepIndex === 1 ? 'bg-sky-900 border-sky-500 text-sky-200 animate-pulse' :
+                  activeStepIndex > 1 ? 'bg-emerald-950 border-emerald-700 text-emerald-300' : 'bg-slate-800 border-slate-700 text-slate-400'
+                ]"
+              >
+                {{ activeStepIndex === 1 ? '▶ 現在実行中' : activeStepIndex > 1 ? '✅ 完了' : '待機中' }}
+              </span>
+            </div>
+            <div>
+              <div class="font-bold text-white text-xs">🎙 文字起こし (STT)</div>
+              <div class="text-[10px] text-slate-400 mt-0.5">Groq Whisper (ja, t=0)</div>
+            </div>
+          </div>
+
+          <!-- STEP 2: 話者分離 -->
+          <div 
+            :class="[
+              'p-3.5 rounded-xl border transition-all flex flex-col justify-between space-y-2',
+              activeStepIndex === 2 
+                ? 'bg-indigo-950/90 border-indigo-400 shadow-lg shadow-indigo-500/20 ring-1 ring-indigo-400' 
+                : activeStepIndex > 2
+                  ? 'bg-slate-900/90 border-emerald-600/80 text-emerald-200'
+                  : 'bg-slate-900/50 border-slate-800 opacity-50'
+            ]"
+          >
+            <div class="flex items-center justify-between">
+              <span 
+                :class="[
+                  'w-6 h-6 rounded-full flex items-center justify-center font-bold text-[10px] shrink-0 border',
+                  activeStepIndex === 2 ? 'bg-indigo-400 text-slate-950 border-indigo-300 animate-pulse font-extrabold' :
+                  activeStepIndex > 2 ? 'bg-emerald-500 text-slate-950 border-emerald-400 font-bold' : 'bg-slate-800 text-slate-400 border-slate-700'
+                ]"
+              >
+                {{ activeStepIndex > 2 ? '✓' : '2' }}
+              </span>
+              <span 
+                :class="[
+                  'text-[9px] font-bold px-2 py-0.5 rounded-full border',
+                  activeStepIndex === 2 ? 'bg-indigo-900 border-indigo-500 text-indigo-200 animate-pulse' :
+                  activeStepIndex > 2 ? 'bg-emerald-950 border-emerald-700 text-emerald-300' : 'bg-slate-800 border-slate-700 text-slate-400'
+                ]"
+              >
+                {{ activeStepIndex === 2 ? '▶ 現在実行中' : activeStepIndex > 2 ? '✅ 完了' : '待機中' }}
+              </span>
+            </div>
+            <div>
+              <div class="font-bold text-white text-xs">👤 話者分離 ＆ 役割識別</div>
+              <div class="text-[10px] text-slate-400 mt-0.5">Pyannote + Llama 3.3</div>
+            </div>
+          </div>
+
+          <!-- STEP 3: スコアリング -->
+          <div 
+            :class="[
+              'p-3.5 rounded-xl border transition-all flex flex-col justify-between space-y-2',
+              activeStepIndex === 3 
+                ? 'bg-purple-950/90 border-purple-400 shadow-lg shadow-purple-500/20 ring-1 ring-purple-400' 
+                : activeStepIndex > 3
+                  ? 'bg-slate-900/90 border-emerald-600/80 text-emerald-200'
+                  : 'bg-slate-900/50 border-slate-800 opacity-50'
+            ]"
+          >
+            <div class="flex items-center justify-between">
+              <span 
+                :class="[
+                  'w-6 h-6 rounded-full flex items-center justify-center font-bold text-[10px] shrink-0 border',
+                  activeStepIndex === 3 ? 'bg-purple-400 text-slate-950 border-purple-300 animate-pulse font-extrabold' :
+                  activeStepIndex > 3 ? 'bg-emerald-500 text-slate-950 border-emerald-400 font-bold' : 'bg-slate-800 text-slate-400 border-slate-700'
+                ]"
+              >
+                {{ activeStepIndex > 3 ? '✓' : '3' }}
+              </span>
+              <span 
+                :class="[
+                  'text-[9px] font-bold px-2 py-0.5 rounded-full border',
+                  activeStepIndex === 3 ? 'bg-purple-900 border-purple-500 text-purple-200 animate-pulse' :
+                  activeStepIndex > 3 ? 'bg-emerald-950 border-emerald-700 text-emerald-300' : 'bg-slate-800 border-slate-700 text-slate-400'
+                ]"
+              >
+                {{ activeStepIndex === 3 ? '▶ 現在実行中' : activeStepIndex > 3 ? '✅ 完了' : '待機中' }}
+              </span>
+            </div>
+            <div>
+              <div class="font-bold text-white text-xs">🤖 AIスコアリング</div>
+              <div class="text-[10px] text-slate-400 mt-0.5">Gemini 2.5 Flash (Few-shot)</div>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="store.taskStatus === 'success'" class="font-medium flex items-center space-x-2 pt-2 text-emerald-300 animate-pulse">
+          <span class="text-lg">🎉</span>
+          <span class="text-xs sm:text-sm">解析がすべて正常に完了しました！自動的にダッシュボード画面へ移動します...</span>
+        </div>
       </div>
 
       <div v-else-if="store.taskStatus === 'error'" class="space-y-3 py-1">
@@ -197,18 +293,29 @@ const store = useUploadStore()
 const router = useRouter()
 const { mutate: uploadAudio, isPending: isUploading } = useUploadAudio()
 
-// TanStack Queryによるポーリング開始
+const activeStepIndex = ref(1)
+
+// TanStack Queryによるバックグラウンドタスクポーリング開始
 useTaskStatus()
 
-// AI解析が成功完了したら、1.5秒後に自動的にダッシュボード画面 (/) へ遷移
+watch(() => store.currentStep, (newStep) => {
+  if (newStep && newStep >= 1) {
+    activeStepIndex.value = newStep
+  }
+}, { immediate: true })
+
+// サーバーからのリアルタイムタスクステータス制御
 watch(() => store.taskStatus, (newStatus) => {
-  if (newStatus === 'success') {
+  if (newStatus === 'processing') {
+    activeStepIndex.value = store.currentStep || 1
+  } else if (newStatus === 'success') {
+    activeStepIndex.value = 4
     setTimeout(() => {
       store.resetStore()
       router.push('/')
-    }, 1500)
+    }, 2200)
   }
-})
+}, { immediate: true })
 
 const isDragging = ref(false)
 

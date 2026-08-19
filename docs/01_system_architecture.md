@@ -1,7 +1,7 @@
 # 🚀 テレセールス・アナリティクス・ダッシュボード システム仕様書
 
 ## 1. システム概要
-本システム（テレセールス見込み顧客スコアリングシステム）は、アウトバウンド型電話営業（テレセールス）における通話音声を自動でテキスト化・話者識別し、最先端の生成AI（Gemini 2.0 Flash / Llama 3.3 70B）を用いて成約率の判定（S〜Eランクスコアリング）、要約、シグナル抽出を行う高度AIインサイドセールス支援プラットフォームです。
+本システム（テレセールス見込み顧客スコアリングシステム）は、アウトバウンド型電話営業（テレセールス）における通話音声を自動でテキスト化・話者識別し、最先端の生成AI（Gemini 2.5 Flash / Llama 3.3 70B）を用いて成約率の判定（S〜Eランクスコアリング）、要約、シグナル抽出を行う高度AIインサイドセールス支援プラットフォームです。
 
 ---
 
@@ -19,11 +19,11 @@
 | | Celery 5.4, Redis 7 | バックグラウンド非同期タスク処理キュー |
 | | SQLAlchemy 2.0 (AsyncSession), Alembic | ORM / DBマイグレーション管理 |
 | | Pydantic v2 | データバリデーション・Structured Output定義 |
-| **AI / LLM** | Groq Whisper (whisper-large-v3-turbo) | 高精度・超高速日本語音声テキスト化 (STT) |
+| **AI / LLM** | Groq Whisper (whisper-large-v3-turbo) | 高精度・超高速日本語音声テキスト化 (STT: language="ja", temperature=0.0, 領域プロンプト) |
 | | Pyannote Audio (speaker-diarization-3.1) | タイムスタンプ別話者分離 (Diarization) |
 | | Groq Llama 3.3 70B (llama-3.3-70b-versatile) | 話者役割判定 (Sales vs Customer) ＆ 二次フォールバックAI |
-| | Google Gemini API (gemini-2.0-flash) | 通話要約・シグナル抽出・Pydantic Structured Output スコアリング (Primary AI) |
-| | OpenRouter API (mistralai/mistral-7b-instruct) | 三次フォールバック用LLM API (クォータ枯渇時保護) |
+| | Google Gemini API (gemini-2.5-flash) | 通話要約・シグナル抽出・Pydantic Structured Output スコアリング (Primary AI, temperature=0.1, Few-shot) |
+| | OpenRouter API (mistralai/mistral-7b-instruct:free) | 三次フォールバック用LLM API (クォータ枯渇時保護) |
 | **インフラ / DB** | PostgreSQL 16 (Docker) | メインリレーショナルデータベース |
 | | MinIO (Docker) | S3互換オブジェクトストレージ (音声ファイル格納) |
 | | Redis 7 (Docker) | Celery用インメモリメッセージブローカー / バックエンド |

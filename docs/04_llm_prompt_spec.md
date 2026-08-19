@@ -5,9 +5,10 @@
 | モデル名 | 提供事業者 | 処理タスク | 選定理由・特徴 |
 | :--- | :--- | :--- | :--- |
 | **`whisper-large-v3-turbo`** | Groq Cloud | 音声認識・文字起こし (STT) | 超高速推論 (リアルタイム比10倍以上)・日本語認識精度 |
-| **`speaker-diarization-3.1`** | Pyannote / HuggingFace | 話者分離 (Speaker Diarization) | タイムスタンプ別話者セグメント抽出のデファクトスタンダード |
-| **`llama-3.3-70b-versatile`** | Groq Cloud | 話者役割判定 ＆ 二次フォールバック | 構造的対話推論・超低遅延レスポンス・Geminiダウン時バックアップ |
-| **`gemini-2.0-flash`** | Google Cloud / Gemini API | メインAIスコアリング (Primary) | 大規模文脈受容・Native Structured Output (Pydantic連動) |
+| **`speaker-diarization-3.0`** | Pyannote / HuggingFace | 話者分離 (Speaker Diarization) | タイムスタンプ別話者セグメント抽出のデファクトスタンダード ＆ Pyannote Speakerレベル構造的役割マッピング |
+| **`generic-llm-proofreader`** | Gemini / Groq | 汎用文脈自律テキスト校正 | 音声認識で削れた語頭切断（「ミュニケーション」➔「コミュニケーション」）や同音異義語（「生体情報」）の自律校正 |
+| **`openai/gpt-oss-120b`** | Groq Cloud | 二次フォールバックAI | 構造的対話推論・超低遅延レスポンス・日本語出力強制（Gemini 429ダウン時バックアップ） |
+| **`gemini-3.6-flash`** | Google Cloud / Gemini API | メインAIスコアリング (Primary) | 大規模文脈受容・Native Structured Output (Pydantic連動) |
 | **`mistral-7b-instruct`** | OpenRouter | 三次フォールバック (Tertiary) | 無料枠クォータ制限時の冗長化バックアップAPI |
 
 ---
@@ -29,33 +30,28 @@
 
 ## 3. プロンプト設計仕様
 
-### 3.1. 話者役割判定プロンプト (`backend/llm_analysis.py`)
-アウトバウンド・テレセールスの構造的原則（発信側が先に名乗る）に基づき、Whisper＋Pyannoteの出力テキストから Sales（営業）と Customer（顧客）を厳密判定する。
+### 3.1. 汎用LLM対話文脈校正プロンプト (`backend/llm_analysis.py` - `proofread_transcripts_with_llm`)
+特定の音声データ依存の直打ち置換（ハードコード）を一切排除し、音声認識の語頭切断や誤音素を会話全体の前後文脈から自律的に校正・修復する汎用ゼロショットプロンプト。
 
 ```text
-あなたはプロフェッショナルな音声対話解析AIです。以下のデータは「企業から顧客へかけたアウトバウンドのテレセールス（電話営業）」の文字起こしログです。
-各セリフが「営業担当者（Sales）」のものか、「顧客（Customer）」のものかを論理的に判定してください。
+あなたはプロの日本語音声対話AI校正スペシャリストです。
+以下は電話営業（テレアポ）の音声認識（STT）によって得られた会話ログです。
 
-【アウトバウンド・テレセールスの構造的原則】
-1. 営業担当者 (Sales) の定義:
-   - この通話は営業側から発信しているため、時間の流れにおいて最初に発言し、自社名や自身の名前を名乗る人物は必ず営業担当者です。
-   - 用件の切り出し、「お時間よろしいでしょうか」というアポイントの打診、およびクロージングを行います。
-2. 顧客 (Customer) の定義:
-   - 営業からの呼びかけに対して応答する側です。
-   - 「こんにちは」「お電話ありがとうございます」という第一声の応答や、自身の状況伝達を行います。
+【校正方針（汎用・自律修正）】
+1. 語頭・語尾の切断補正: 音声区切りの影響で単語の頭（例: 『ミュニケーション』➔『コミュニケーション』、『上アラブル』➔『ウェアラブル』）や文末が切れて不自然になっている箇所を、前後文脈から推測して自然な日本語に修正してください。
+2. 誤字・同音異義語の校正: 専門用語や音素誤認識（例: 『生態情報』➔『生体情報』、『終時』➔『週次』、『機械損失』➔『機会損失』、『1000人の〜』➔『専任の〜』）を正しい用語に校正してください。
+3. 会話の流れと整合性の維持: 話者（Sales/Customer）および発話の意味合いを変更しないでください。
+4. 出力形式: 出力はJSONオブジェクトのみとし、キーにセリフのインデックス文字列（"0", "1", "2"...）、値に校正後の自然な発話テキストを指定してください。
 
 【会話ログ】
-{full_sample}
-
-【出力形式】
-JSON形式で、各セリフのID（文字列の数字）をキー、判定結果（"Sales" または "Customer"）を値にしたオブジェクトのみを出力してください。
+{full_text}
 ```
 
 ---
 
-### 3.2. Gemini Structured Output スコアリングプロンプト (`backend/llm_analysis.py`)
+### 3.2. Gemini Structured Output スコアリング ＆ 日本語強制プロンプト (`backend/llm_analysis.py`)
 Pydantic スキーマ `schemas.AnalysisResultBase` を `response_schema` に与え、型安全な成約率・ランク判定を行う。
-1%単位の精細なスコアリングを実現するため、4つの観点（各0〜25点）に基づくルーブリック細密評価プロンプトと `temperature=0.5` を採用し、ランク（S〜E）はバックエンドで自動導出する。
+Groq フォールバック時にも解説文章が英語化されないよう、`【言語指定（最優先指示）】` ルールを厳格適用。
 
 - **Pydantic スキーマ構造**:
   ```python
@@ -67,10 +63,13 @@ Pydantic スキーマ `schemas.AnalysisResultBase` を `response_schema` に与�
       recommended_action: str = Field(..., description="営業担当者が次にとるべき具体的な推奨アクション")
   ```
 
-- **ルーブリック細密評価スコアリングプロンプト**:
+- **ルーブリック細密評価 Few-shot スコアリングプロンプト**:
   ```text
   あなたはプロのインサイドセールス分析AIです。以下の電話営業の対話ログを細かく評価し、
   顧客の成約意欲・成約率 (`purchase_probability`: 0〜100の数値) を算出してください。
+
+  【言語指定（最優先指示）】
+  ・出力するすべての文章（`customer_interest`, `concerns`, `recommended_action`）は【必ず日本語】で記述してください。英語は絶対に使用しないでください。
 
   【数値算出指示 (ルーブリック細密評価)】
   以下の4つの観点（各0〜25点）を個別に厳密に評価し、その合計点（0〜100）を `purchase_probability` としてください。
@@ -79,7 +78,21 @@ Pydantic スキーマ `schemas.AnalysisResultBase` を `response_schema` に与�
   3. 次回アクション・スケジュールの具体性 (0〜25点)
   4. 懸念・反論リスクの少なさ (0〜25点)
 
-  ※ 80, 60, 50, 40 などの典型的な5や10の倍数に丸めず、各観点の加算結果によるリアルな1%単位の数値（例: 83, 76, 62, 49, 27, 8 など）を正確に算出してください。
+  【評価例 (Few-shot 判定サンプル)】
+  ・例1 (Sランク・非常に有望):
+    対話: 顧客「ぜひ導入したいです。来週月曜日に契約書を送ってください。」
+    期待評価: 関心・課題感・次回アクションがすべて確定し懸念なし。
+    期待スコア (`purchase_probability`): 92 (観点1:24, 観点2:23, 観点3:23, 観点4:22)
+
+  ・例2 (Bランク・検討中):
+    対話: 顧客「興味はありますが、予算と社内検討が必要です。資料をいただけますか。」
+    期待評価: 関心はあるが他社比較や予算調整が必要。
+    期待スコア (`purchase_probability`): 62 (観点1:18, 観点2:15, 観点3:14, 観点4:15)
+
+  ・例3 (Eランク・不可行):
+    対話: 顧客「すでに他社製品を長期契約したばかりで全く必要ありません。結構です。」
+    期待評価: 明確な拒絶・ターゲット外。
+    期待スコア (`purchase_probability`): 5 (観点1:2, 観点2:1, 観点3:0, 観点4:2)
 
   【対話ログ】
   {dialogue_text}
@@ -93,10 +106,10 @@ AI API の利用制限（429 Too Many Requests）やサーバーダウン、ネ�
 
 ```mermaid
 graph TD
-    A[スコアリングリクエスト開始] --> B{1. Gemini 2.0 Flash}
+    A[スコアリングリクエスト開始] --> B{1. Gemini 3.6 Flash}
     B -- 成功 --> SUCCESS[分析完了 & DB保存]
-    B -- 429/エラー --> C{2. Groq Llama 3.3 70B}
-    C -- 成功 --> SUCCESS
+    B -- 429/エラー --> C{2. Groq gpt-oss-120b}
+    C -- 成功 (日本語強制) --> SUCCESS
     C -- エラー --> D{3. OpenRouter Mistral 7B}
     D -- 成功 --> SUCCESS
     D -- エラー --> SAFE[4. デフォルト安全結果返却]
@@ -104,10 +117,10 @@ graph TD
     SAFE_RES --> SUCCESS
 ```
 
-1. **第1優先 (Primary)**: `gemini-2.0-flash`
+1. **第1優先 (Primary)**: `gemini-3.6-flash`
    - Native Pydantic Structured Output により高精度・低遅延でスコアリングを実行。
-2. **第2優先 (Secondary Fallback)**: `llama-3.3-70b-versatile` (Groq API)
-   - Gemini が 429 レートリミットやダウン状態の場合、自動的に Groq API に切替。
+2. **第2優先 (Secondary Fallback)**: `openai/gpt-oss-120b` (Groq API)
+   - Gemini が 429 レートリミットやダウン状態の場合、自動的に Groq API に切替（日本語出力指定を厳格適用）。
 3. **第3優先 (Tertiary Fallback)**: `mistralai/mistral-7b-instruct:free` (OpenRouter API)
    - Groq API も制限に達した場合、httpx 同期クライアント経由で OpenRouter 無料枠モデルを呼び出し。
 4. **第4優先 (Quaternary / Safe Default Return)**: 安全なデフォルト値返却

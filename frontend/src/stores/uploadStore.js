@@ -19,8 +19,15 @@ export const useUploadStore = defineStore('upload', () => {
     const taskId = ref(null)
     const taskStatus = ref('idle') // idle, uploading, processing, success, error
     const taskError = ref(null)
+    const currentStep = ref(1) // 1: STT, 2: Diarization, 3: Scoring, 4: Done
 
     // === 2. アクション (Actions) ===
+
+    const setCurrentStep = (step) => {
+        if (step && step >= 1 && step <= 4) {
+            currentStep.value = step
+        }
+    }
 
     // ファイルをセットし、プレビュー用のURLを生成する ＆ 通話時間(秒)を自動検出する
     const setAudioFile = (file) => {
@@ -61,6 +68,9 @@ export const useUploadStore = defineStore('upload', () => {
         taskStatus.value = status
         if (id) taskId.value = id
         if (error) taskError.value = error
+        if (status === 'processing' && !id) {
+            currentStep.value = 1
+        }
     }
 
     // フォーム全体の初期化（アップロード完了後に次の入力へ備えるため）
@@ -72,6 +82,7 @@ export const useUploadStore = defineStore('upload', () => {
         taskId.value = null
         taskStatus.value = 'idle'
         taskError.value = null
+        currentStep.value = 1
     }
 
     return {
@@ -81,9 +92,11 @@ export const useUploadStore = defineStore('upload', () => {
         taskId,
         taskStatus,
         taskError,
+        currentStep,
         setAudioFile,
         clearAudioFile,
         setTaskState,
+        setCurrentStep,
         resetStore
     }
 })
