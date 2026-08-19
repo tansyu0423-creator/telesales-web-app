@@ -38,3 +38,23 @@ def test_transcribe_audio_parameters_and_formatting():
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
+
+
+def test_chunk_transcription_failure_is_raised():
+    """長時間音声のchunk失敗を成功扱いせず、呼び出し元へ伝播する"""
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        tmp_path = tmp.name
+        with wave.open(tmp_path, 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(1)
+            wf.writeframes(b'\x00\x00' * 121)
+
+    try:
+        with patch.object(stt, "client") as mock_client:
+            mock_client.audio.transcriptions.create.side_effect = RuntimeError("provider down")
+            with pytest.raises(RuntimeError, match="Chunk 1 transcription failed"):
+                stt.transcribe_audio(tmp_path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)

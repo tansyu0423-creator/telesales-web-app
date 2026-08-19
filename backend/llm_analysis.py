@@ -12,8 +12,9 @@ except ImportError:
     from config import settings
     import schemas
 
-client = Groq(api_key=settings.groq_api_key, timeout=30.0) if settings.groq_api_key else None
-MODEL_NAME = "openai/gpt-oss-120b"
+GROQ_TIMEOUT_SECONDS = 2.0
+MODEL_NAME = "llama3-70b-8192"
+client = Groq(api_key=settings.groq_api_key, timeout=GROQ_TIMEOUT_SECONDS) if settings.groq_api_key else None
 
 gemini_client = genai.Client(api_key=settings.gemini_api_key) if settings.gemini_api_key else None
 groq_client = client
@@ -180,46 +181,6 @@ def merge_whisper_and_diarization(words, diarization_segments):
     return merged_segments
 
 
-def repair_split_japanese_words(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    話者切り替わり時に単語や熟語（例: 「ご懸」＋「念」➔ 「ご懸念」）が不自然に分断されたり、
-    句読点「。」が途中に挿入されてしまった箇所の修復・補正を行う関数
-    """
-    if not segments or len(segments) < 2:
-        return segments
-
-    split_rules = [
-        ("ご懸", "念", "ご懸念"),
-        ("ご関", "心", "ご関心"),
-        ("ご確", "認", "ご確認"),
-        ("ご対", "応", "ご対応"),
-        ("お問", "い合わせ", "お問い合わせ"),
-        ("お問", "合せ", "お問い合わせ"),
-        ("お世", "話", "お世話"),
-        ("ありが", "とう", "ありがとう"),
-    ]
-
-    for i in range(len(segments) - 1):
-        text_curr = segments[i]["text"].rstrip("。、 　")
-        text_next = segments[i + 1]["text"].lstrip("。、 　")
-
-        for prefix, suffix, full_word in split_rules:
-            if text_curr.endswith(prefix) and text_next.startswith(suffix):
-                cleaned_curr = text_curr[:-len(prefix)].rstrip("。、 　")
-                if cleaned_curr:
-                    if not cleaned_curr.endswith(("。", "！", "？", "!", "?")):
-                        cleaned_curr += "。"
-                    segments[i]["text"] = cleaned_curr
-                else:
-                    segments[i]["text"] = ""
-
-                cleaned_next = text_next[len(suffix):].lstrip("。、 　")
-                segments[i + 1]["text"] = full_word + cleaned_next
-                break
-
-    return segments
-
-
 def merge_consecutive_speakers(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     対話の構造的ターン交替（Turn-Taking）に基づき、同じ話者（Sales / Customer）の
@@ -265,7 +226,7 @@ def merge_consecutive_speakers(segments: List[Dict[str, Any]]) -> List[Dict[str,
             }
     
     merged.append(current)
-    return repair_split_japanese_words(merged)
+    return merged
 
 
 def identify_roles_by_llm(merged_segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -338,13 +299,6 @@ def proofread_transcripts_with_llm(segments: List[Dict[str, Any]]) -> List[Dict[
     if not segments:
         return segments
 
-    # 1. 音声分離（Pyannote）の誤判定により営業側の説明が顧客（Customer）に混入したケースの自動修復
-    for s in segments:
-        txt = s.get("text", "")
-        if s.get("speaker") == "Customer":
-            if any(pat in txt for pat in ["研究データに基づいている", "弊社", "ご提供しており", "ご案内", "伴走サポート"]):
-                s["speaker"] = "Sales"
-
     dialogue_lines = [f"[{i}] {s.get('speaker', 'Unknown')}: {s.get('text', '')}" for i, s in enumerate(segments)]
     full_text = "\n".join(dialogue_lines)
 
@@ -355,9 +309,10 @@ def proofread_transcripts_with_llm(segments: List[Dict[str, Any]]) -> List[Dict[
 【校正方針（汎用・自律修正）】
 1. **口語・発音の崩れ・言い淀み・語頭語尾切断の標準語整形**: 音声認識によって『こんちょっと』『こん』等の発音崩れや言い淀み・誤記として取得された不自然な表現を、会話全体の前後文脈から推測して標準的で読みやすい綺麗な日本語表現（『今ちょっと』等）に確実に校正・修正してください。
 2. **誤字・同音異義語の校正**: 専門用語や音素誤認識（例: 『生態情報』➔『生体情報』、『終時』➔『週次』、『機械損失』➔『機会損失』）を正しい用語に校正してください。
-3. **会話の流れと整合性の維持**: 話者（Sales/Customer）および発話の意味合いを変更しないでください。
-4. **【要約・文節削除の絶対禁止】**: 入力テキストに含まれるすべての文章・節（特に『研究データに基づいているんです』などの文言）をスキップ・短縮・要約することを【厳禁】とします。全文を完全に保持してください。
-5. **出力形式**: 出力はJSONオブジェクトのみとし、キーにセリフのインデックス文字列（"0", "1", "2"...）、値に校正後の発話テキストを指定してください。
+3. **会話の流れと整合性の維持**: 話者（Sales/Customer）、発話順、発話数は変更せず、テキストだけを校正してください。
+4. **文脈に基づく分断修復**: 話者切り替えやSTTの単語分割で文が不自然に分断されている場合は、前後の文脈から自然な日本語へ修復してください。特定の単語・フレーズ・話者を根拠にした固定ルールは使わないでください。
+5. **【要約・文節削除の絶対禁止】**: 入力テキストに含まれるすべての文章・節をスキップ・短縮・要約せず、全文を保持してください。
+6. **出力形式**: 出力はJSONオブジェクトのみとし、キーにセリフのインデックス文字列（"0", "1", "2"...）、値に校正後の発話テキストを指定してください。
 
 【会話ログ】
 {full_text}
@@ -541,7 +496,7 @@ def analyze_and_score_call(record_id: int, transcripts: List[Dict[str, Any]]) ->
             groq_prompt = prompt + "\n\n【重要】すべての出力テキストは【必ず日本語】で作成してください。英語禁止。出力は必ず以下のキーを持つJSONにしてください: {\"purchase_probability\": 0から100の数値, \"customer_interest\": \"日本語文字列\", \"concerns\": \"日本語文字列\", \"recommended_action\": \"日本語文字列\"}"
             
             response = groq_client.chat.completions.create(
-                model="openai/gpt-oss-120b",
+                model=MODEL_NAME,
                 messages=[{"role": "user", "content": groq_prompt}],
                 temperature=0.1,
                 response_format={"type": "json_object"}

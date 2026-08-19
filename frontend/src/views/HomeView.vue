@@ -1,4 +1,40 @@
-<script setup>
+git stash push -u -m "day14修正をday13へ移行"
+git fetch origin
+git switch -c feature/day13 --track origin/feature/day13
+git pull --ff-only origin feature/day13
+git stash popgit stash push -u -m "day14修正をday13へ移行"
+git fetch origin
+git switch -c feature/day13 --track origin/feature/day13
+git pull --ff-only origin feature/day13
+git stash popgit stash push -u -m "day14修正をday13へ移行"
+git fetch origin
+git switch -c feature/day13 --track origin/feature/day13
+git pull --ff-only origin feature/day13
+git stash popgit stash push -u -m "day14修正をday13へ移行"
+git fetch origin
+git switch -c feature/day13 --track origin/feature/day13
+git pull --ff-only origin feature/day13
+git stash popgit stash push -u -m "day14修正をday13へ移行"
+git fetch origin
+git switch -c feature/day13 --track origin/feature/day13
+git pull --ff-only origin feature/day13
+git stash popgit stash push -u -m "day14修正をday13へ移行"
+git fetch origin
+git switch -c feature/day13 --track origin/feature/day13
+git pull --ff-only origin feature/day13
+git stash popgit stash push -u -m "day14修正をday13へ移行"
+git fetch origin
+git switch -c feature/day13 --track origin/feature/day13
+git pull --ff-only origin feature/day13
+git stash popgit stash push -u -m "day14修正をday13へ移行"
+git fetch origin
+git switch -c feature/day13 --track origin/feature/day13
+git pull --ff-only origin feature/day13
+git stash popgit stash push -u -m "day14修正をday13へ移行"
+git fetch origin
+git switch -c feature/day13 --track origin/feature/day13
+git pull --ff-only origin feature/day13
+git stash pop<script setup>
 import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue'
 import api from '../services/api'
 import CircularProgressGauge from '../components/CircularProgressGauge.vue'
@@ -188,7 +224,7 @@ const handleAnalyze = async (recordId) => {
 }
 
 const handleExportCsv = (recordId) => {
-  window.open(`http://localhost:8000/api/records/${recordId}/export/csv`, '_blank')
+  window.open(`http://localhost:8000/records/${recordId}/export/csv`, '_blank')
 }
 
 const handleDeleteRecord = async (recordId) => {

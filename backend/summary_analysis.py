@@ -11,8 +11,9 @@ try:
 except ImportError:
     from config import settings
 
+GROQ_TIMEOUT_SECONDS = 2.0
 gemini_client = genai.Client(api_key=settings.gemini_api_key) if settings.gemini_api_key else None
-groq_client = Groq(api_key=settings.groq_api_key) if settings.groq_api_key else None
+groq_client = Groq(api_key=settings.groq_api_key, timeout=GROQ_TIMEOUT_SECONDS) if settings.groq_api_key else None
 
 
 def call_openrouter_api_for_summary(prompt: str) -> Dict[str, Any]:
@@ -90,7 +91,7 @@ def summarize_call(transcripts: List[Dict[str, Any]]) -> Dict[str, Any]:
         try:
             print("Groq API で要約分析を実行中...")
             response = groq_client.chat.completions.create(
-                model="openai/gpt-oss-120b",
+                model="llama3-70b-8192",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
                 response_format={"type": "json_object"}

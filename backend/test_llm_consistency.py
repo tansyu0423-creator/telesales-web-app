@@ -59,25 +59,19 @@ def test_llm_consistency_reproducibility_mock():
         assert all(r.purchase_probability == 92 for r in results)
 
 
-def test_repair_split_japanese_words():
-    """話者切り替わり時の「ご懸」＋「念」など単語・句読点の不自然な分断修復テスト"""
+def test_proofreader_does_not_change_speaker_for_fixed_phrases():
+    """校正処理は固定フレーズを根拠に話者を変更しない"""
     segments = [
         {
             "speaker": "Customer",
-            "start": 73.8,
-            "end": 92.3,
-            "text": "まあ確かにそれはあるね。引き継ぎの時に漏れてトラブルになったりすることは正直ある、ご懸。"
-        },
-        {
-            "speaker": "Sales",
-            "start": 92.3,
-            "end": 134.8,
-            "text": "念ありがとうございます。初期費用や定着率についてですね。"
+            "start": 0.0,
+            "end": 1.0,
+            "text": "ご案内を受けました。"
         }
     ]
 
-    repaired = llm_analysis.repair_split_japanese_words(segments)
+    with patch.object(llm_analysis, "gemini_client", None), patch.object(llm_analysis, "groq_client", None):
+        proofread = llm_analysis.proofread_transcripts_with_llm(segments)
 
-    assert repaired[0]["text"] == "まあ確かにそれはあるね。引き継ぎの時に漏れてトラブルになったりすることは正直ある。"
-    assert repaired[1]["text"] == "ご懸念ありがとうございます。初期費用や定着率についてですね。"
+    assert proofread[0]["speaker"] == "Customer"
 

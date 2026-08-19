@@ -48,7 +48,7 @@ def transcribe_audio(file_path: str):
             print(f"Groq Whisper STT Error: {e}")
             raise e
 
-    # 10分を超える場合はチャンク分割処理
+    # 2分を超える場合はチャンク分割処理
     print(f"Audio duration ({total_duration:.1f}s) exceeds limit. Splitting into chunks...")
     all_words = []
     all_segments = []
@@ -118,7 +118,9 @@ def transcribe_audio(file_path: str):
                             'end': getattr(s, 'end', 0.0) + offset
                         })
             except Exception as e:
-                print(f"Chunk {chunk_index + 1} transcription error: {e}")
+                raise RuntimeError(
+                    f"Chunk {chunk_index + 1} transcription failed"
+                ) from e
             finally:
                 if chunk_path and os.path.exists(chunk_path):
                     os.remove(chunk_path)  # 使い終わった分割ファイルを必ず削除
