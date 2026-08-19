@@ -4,14 +4,13 @@ from backend import tasks, llm_analysis
 
 
 def test_pipeline_error_path_execution_speed():
-    """例外発生時のエラーレスポンスが高速（5秒以内）に返却されることを検証"""
+    """例外発生時に高速（5秒以内）でRuntimeErrorが送出されることを検証"""
     start_time = time.perf_counter()
-    res = tasks.full_pipeline_task(record_id=999999)
+    with pytest.raises(RuntimeError, match="パイプライン実行中"):
+        tasks.full_pipeline_task(record_id=999999)
     elapsed = time.perf_counter() - start_time
 
     assert elapsed < 5.0, f"Error path execution too slow: {elapsed:.2f}s"
-    assert isinstance(res, dict)
-    assert res.get("status") == "failure"
 
 
 def test_llm_scoring_performance_benchmark():
