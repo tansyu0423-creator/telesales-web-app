@@ -109,13 +109,15 @@ const handleTranscribe = async () => {
 const handleAnalyze = async () => {
   isActionLoading.value = true
   try {
-    const res = await api.post(`/records/${recordId}/score`)
-    if (res.data.task_id) {
+    const hasTranscripts = record.value && record.value.transcripts && record.value.transcripts.length > 0
+    const endpoint = hasTranscripts ? `/records/${recordId}/score` : `/records/${recordId}/pipeline`
+    const res = await api.post(endpoint)
+    if (res.data && res.data.task_id) {
       await pollTaskStatus(res.data.task_id)
     }
     await fetchRecordDetail()
   } catch (err) {
-    alert(err.response?.data?.detail || err.message || 'AIスコアリングに失敗しました')
+    alert(err.response?.data?.detail || err.message || 'AI解析に失敗しました')
   } finally {
     isActionLoading.value = false
   }

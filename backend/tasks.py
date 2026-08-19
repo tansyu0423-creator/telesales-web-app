@@ -242,6 +242,16 @@ def score_record_task(self, record_id: int) -> Dict[str, Any]:
     return _run_score_record(record_id, task_ctx=self)
 
 
+@celery_app.task(bind=True, name="backend.tasks.transcribe_and_diarize_task")
+def transcribe_and_diarize_task(self, record_id: int) -> Dict[str, Any]:
+    return _run_transcribe_and_diarize(record_id, task_ctx=self)
+
+
+@celery_app.task(bind=True, name="backend.tasks.score_record_task")
+def score_record_task(self, record_id: int) -> Dict[str, Any]:
+    return _run_score_record(record_id, task_ctx=self)
+
+
 @celery_app.task(bind=True, name="backend.tasks.full_pipeline_task")
 def full_pipeline_task(self, record_id: int) -> Dict[str, Any]:
     t_start = time.perf_counter()

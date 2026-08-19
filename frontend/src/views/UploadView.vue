@@ -283,7 +283,7 @@
 </template>
 
 <script setup>
-import { ref, watch, onUnmounted } from 'vue'
+import { ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUploadStore } from '../stores/uploadStore'
 import { useUploadAudio } from '../composables/useUploadAudio'
@@ -294,9 +294,8 @@ const router = useRouter()
 const { mutate: uploadAudio, isPending: isUploading } = useUploadAudio()
 
 const activeStepIndex = ref(1)
-let stepTimer = null
 
-// TanStack Queryによるポーリング開始
+// TanStack Queryによるバックグラウンドタスクポーリング開始
 useTaskStatus()
 
 watch(() => store.currentStep, (newStep) => {
@@ -305,43 +304,18 @@ watch(() => store.currentStep, (newStep) => {
   }
 }, { immediate: true })
 
-// リアルタイムアクティブステップ制御 ＆ 音声長さに連動した動的予測タイマー
+// サーバーからのリアルタイムタスクステータス制御
 watch(() => store.taskStatus, (newStatus) => {
   if (newStatus === 'processing') {
     activeStepIndex.value = store.currentStep || 1
-    let seconds = 0
-    const totalDuration = store.metadata.duration || 60
-    const sttEstimate = Math.max(5, Math.round(totalDuration * 0.05))
-    const diarizationEstimate = sttEstimate + Math.max(10, Math.round(totalDuration * 0.18))
-
-    if (stepTimer) clearInterval(stepTimer)
-    stepTimer = setInterval(() => {
-      seconds += 1
-      if (store.currentStep > 1) {
-        activeStepIndex.value = store.currentStep
-      } else {
-        if (seconds >= sttEstimate && activeStepIndex.value === 1) {
-          activeStepIndex.value = 2 // 話者分離 & 役割識別 (Pyannote 最長フェーズ)
-        } else if (seconds >= diarizationEstimate && activeStepIndex.value === 2) {
-          activeStepIndex.value = 3 // AIスコアリング
-        }
-      }
-    }, 1000)
   } else if (newStatus === 'success') {
     activeStepIndex.value = 4
-    if (stepTimer) clearInterval(stepTimer)
     setTimeout(() => {
       store.resetStore()
       router.push('/')
     }, 2200)
-  } else {
-    if (stepTimer) clearInterval(stepTimer)
   }
 }, { immediate: true })
-
-onUnmounted(() => {
-  if (stepTimer) clearInterval(stepTimer)
-})
 
 const isDragging = ref(false)
 

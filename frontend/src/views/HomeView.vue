@@ -211,10 +211,36 @@ const handleTriggerRefresh = () => {
   fetchRecords()
 }
 
+const pollTaskStatus = async (taskId) => {
+  return new Promise((resolve, reject) => {
+    const interval = setInterval(async () => {
+      try {
+        const res = await api.get(`/tasks/${taskId}`)
+        if (res.data.status === 'SUCCESS') {
+          clearInterval(interval)
+          resolve(res.data.result)
+        } else if (res.data.status === 'FAILURE') {
+          clearInterval(interval)
+          reject(new Error(res.data.error || 'タスク処理に失敗しました'))
+        }
+      } catch (e) {
+        clearInterval(interval)
+        reject(e)
+      }
+    }, 2000)
+  })
+}
+
 const handleAnalyze = async (recordId) => {
   actionLoading.value[`${recordId}_analyze`] = true
   try {
-    await api.post(`/records/${recordId}/analyze`)
+    const record = records.value.find(r => r.id === recordId)
+    const hasTranscripts = record && record.transcripts && record.transcripts.length > 0
+    const endpoint = hasTranscripts ? `/records/${recordId}/score` : `/records/${recordId}/pipeline`
+    const res = await api.post(endpoint)
+    if (res.data && res.data.task_id) {
+      await pollTaskStatus(res.data.task_id)
+    }
     await fetchRecords()
   } catch (err) {
     alert('AI解析の実行に失敗しました: ' + (err.response?.data?.detail || err.message))
