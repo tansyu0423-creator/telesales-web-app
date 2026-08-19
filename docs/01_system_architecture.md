@@ -20,9 +20,10 @@
 | | SQLAlchemy 2.0 (AsyncSession), Alembic | ORM / DBマイグレーション管理 |
 | | Pydantic v2 | データバリデーション・Structured Output定義 |
 | **AI / LLM** | Groq Whisper (whisper-large-v3-turbo) | 高精度・超高速日本語音声テキスト化 (STT: language="ja", temperature=0.0, 領域プロンプト) |
-| | Pyannote Audio (speaker-diarization-3.1) | タイムスタンプ別話者分離 (Diarization) |
-| | Groq Llama 3.3 70B (llama-3.3-70b-versatile) | 話者役割判定 (Sales vs Customer) ＆ 二次フォールバックAI |
-| | Google Gemini API (gemini-2.5-flash) | 通話要約・シグナル抽出・Pydantic Structured Output スコアリング (Primary AI, temperature=0.1, Few-shot) |
+| | Pyannote Audio (speaker-diarization-3.0) | タイムスタンプ別話者分離 (Diarization) ＆ 構造的話者役割同定 (Sales vs Customer) |
+| | Generic LLM Proofreader (Gemini / Groq) | 汎用文脈自律テキスト校正（語頭切断切断補正・誤音素自律修復） |
+| | Groq LLM (openai/gpt-oss-120b) | 二次フォールバック用LLM (日本語出力厳格強制プロンプト適用) |
+| | Google Gemini API (gemini-3.6-flash) | 通話要約・シグナル抽出・Pydantic Structured Output スコアリング (Primary AI, temperature=0.1, Few-shot) |
 | | OpenRouter API (mistralai/mistral-7b-instruct:free) | 三次フォールバック用LLM API (クォータ枯渇時保護) |
 | **インフラ / DB** | PostgreSQL 16 (Docker) | メインリレーショナルデータベース |
 | | MinIO (Docker) | S3互換オブジェクトストレージ (音声ファイル格納) |
@@ -167,11 +168,11 @@ sequenceDiagram
         Redis->>Worker: タスク取得
         Worker->>MinIO: 音声ファイルダウンロード
         Worker->>AI: 1. Whisper STT (テキスト化)
-        Worker->>AI: 2. Pyannote (話者分離)
-        Worker->>AI: 3. Llama 3 (話者役割判定 Sales vs Customer)
-        AI-->>Worker: 話者識別付きタイムライン対話ログ
-        Worker->>DB: トランスクリプト一括保存
-        Worker->>AI: 4. Gemini 2.0 Flash (スコアリング ＆ 要約)
+        Worker->>AI: 2. Pyannote (話者分離 ＆ 構造的話者役割同定)
+        Worker->>AI: 3. Generic LLM Proofreader (自律文脈テキスト校正)
+        AI-->>Worker: 補正済みタイムライン対話ログ
+        Worker->>DB: トランスクリプト一括保存 (過去データDELETE後INSERT)
+        Worker->>AI: 4. Gemini 3.6 Flash / Groq (スコアリング ＆ 日本語要約)
         AI-->>Worker: 成約率(%), S〜Eランク, 関心点, 懸念点, 推奨アクション
         Worker->>DB: 分析結果保存 (Upsert)
     and フロントエンドポーリング

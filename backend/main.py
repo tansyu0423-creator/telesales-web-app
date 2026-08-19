@@ -6,7 +6,7 @@ import io
 import json
 from typing import List, Dict, TypedDict
 
-from fastapi import FastAPI, Depends, HTTPException, File, UploadFile, status, Form
+from fastapi import FastAPI, Depends, HTTPException, File, UploadFile, status, Form, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -264,15 +264,59 @@ async def upload_audio(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"ストレージエラー: {str(e)}")
 
 # ---------------------------------------------
-# 音声ファイルストリーミング再生APIを追加
+# 音声ファイルストリーミング再生API
 # ---------------------------------------------
 @app.get("/audio/{filename}", tags=["Audio Stream"])
-def stream_audio(filename: str):
-    """MinIOから音声ファイルをダウンロード/ストリーミング再生するAPI"""
+def stream_audio(filename: str, request: Request):
+    """MinIOから音声ファイルをダウンロード/ストリーミング再生するAPI（HTTP Rangeヘッダー対応）"""
+    if ".." in filename or "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="無効なファイル名です")
+
     try:
-        response = minio_client.get_object(settings.minio_bucket_name, filename)
-        content_type = response.headers.get("content-type") or ("audio/mpeg" if filename.endswith(".mp3") else "audio/wav")
-        return StreamingResponse(response.stream(32 * 1024), media_type=content_type)
+        stat = minio_client.stat_object(settings.minio_bucket_name, filename)
+        if stat.size is None:
+            raise HTTPException(status_code=500, detail="ファイルサイズの取得に失敗しました")
+        file_size = stat.size
+        content_type = stat.content_type or ("audio/mpeg" if filename.endswith(".mp3") else "audio/wav")
+
+        range_header = request.headers.get("range")
+        if range_header and range_header.startswith("bytes="):
+            byte_range = range_header.replace("bytes=", "").split("-")
+            start = int(byte_range[0]) if byte_range[0] else 0
+            end = int(byte_range[1]) if len(byte_range) > 1 and byte_range[1] else file_size - 1
+            if end >= file_size:
+                end = file_size - 1
+            length = end - start + 1
+
+            response = minio_client.get_object(
+                settings.minio_bucket_name,
+                filename,
+                offset=start,
+                length=length
+            )
+            data = response.read()
+            response.close()
+            response.release_conn()
+
+            headers = {
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(length),
+                "Content-Type": content_type,
+            }
+            return Response(content=data, status_code=206, headers=headers, media_type=content_type)
+        else:
+            response = minio_client.get_object(settings.minio_bucket_name, filename)
+            data = response.read()
+            response.close()
+            response.release_conn()
+
+            headers = {
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(file_size),
+                "Content-Type": content_type,
+            }
+            return Response(content=data, status_code=200, headers=headers, media_type=content_type)
     except Exception as e:
         raise HTTPException(status_code=404, detail=f"音声ファイルが見つかりません: {str(e)}")
 
@@ -499,24 +543,12 @@ async def upload_and_transcribe_record(
         )
         db_record = await crud.create_call_record(db=db, record=record_in)
 
-        # 3. Day 8/9のフル自動パイプライン（または文字起こしタスク）をバックグラウンドで自動発火！
+        # 全自動AI解析パイプラインをバックグラウンドで自動発火
         task = tasks.full_pipeline_task.delay(db_record.id)
 
-        # フロントエンドの store.setTaskState('processing', data.task_id) が受け取れるように返す
-        # ※レスポンスに task_id を含めるのがポイントです
-        # （response_modelが CallRecord のため、もし task_id も返したい場合は辞書を返すかスキーマを調整します）
-        
-        # FastAPIのresponse_modelに合わせて辞書を返すための工夫
-        # 返り値に task_id を持たせるためのカスタムレスポンス
-        return {
-            "id": db_record.id,
-            "sales_code": db_record.sales_code,
-            "customer_phone": db_record.customer_phone,
-            "call_duration": db_record.call_duration,
-            "audio_file_path": db_record.audio_file_path,
-            "created_at": db_record.created_at,
-            "task_id": task.id
-        }
+        result = schemas.CallRecord.model_validate(db_record)
+        result.task_id = str(task.id)
+        return result
 
     except S3Error as e:
         raise HTTPException(status_code=500, detail=f"ストレージエラー: {str(e)}")

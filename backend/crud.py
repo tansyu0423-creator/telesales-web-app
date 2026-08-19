@@ -6,7 +6,7 @@ try:
 except ImportError:
     import models, schemas
 
-async def create_call_record(db: AsyncSession, record: schemas.CallRecordCreate):
+async def create_call_record(db: AsyncSession, record: schemas.CallRecordCreate) -> models.CallRecord:
     db_record = models.CallRecord(**record.model_dump())
     db.add(db_record)
     await db.commit()

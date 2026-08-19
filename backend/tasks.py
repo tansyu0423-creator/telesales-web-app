@@ -181,11 +181,7 @@ def _run_transcribe_and_diarize(record_id: int, task_ctx=None) -> Dict[str, Any]
     except Exception as e:
         error_msg = f"文字起こし・話者分離処理でエラーが発生しました: {str(e)}"
         print(f"Task Error [transcribe_and_diarize_task]: {error_msg}")
-        return {
-            "status": "failure",
-            "record_id": record_id,
-            "error": error_msg
-        }
+        raise RuntimeError(error_msg) from e
 
 
 def _run_score_record(record_id: int, task_ctx=None) -> Dict[str, Any]:
@@ -233,11 +229,17 @@ def _run_score_record(record_id: int, task_ctx=None) -> Dict[str, Any]:
     except Exception as e:
         error_msg = f"AIスコアリング処理でエラーが発生しました: {str(e)}"
         print(f"Task Error [score_record_task]: {error_msg}")
-        return {
-            "status": "failure",
-            "record_id": record_id,
-            "error": error_msg
-        }
+        raise RuntimeError(error_msg) from e
+
+
+@celery_app.task(bind=True, name="backend.tasks.transcribe_and_diarize_task")
+def transcribe_and_diarize_task(self, record_id: int) -> Dict[str, Any]:
+    return _run_transcribe_and_diarize(record_id, task_ctx=self)
+
+
+@celery_app.task(bind=True, name="backend.tasks.score_record_task")
+def score_record_task(self, record_id: int) -> Dict[str, Any]:
+    return _run_score_record(record_id, task_ctx=self)
 
 
 @celery_app.task(bind=True, name="backend.tasks.transcribe_and_diarize_task")
@@ -284,8 +286,4 @@ def full_pipeline_task(self, record_id: int) -> Dict[str, Any]:
     except Exception as e:
         error_msg = f"パイプライン実行中に予期せぬエラーが発生しました: {str(e)}"
         print(f"Task Error [full_pipeline_task]: {error_msg}")
-        return {
-            "status": "failure",
-            "record_id": record_id,
-            "error": error_msg
-        }
+        raise RuntimeError(error_msg) from e

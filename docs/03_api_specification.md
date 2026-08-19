@@ -125,13 +125,13 @@
 `POST /records/{record_id}/transcribe`
 
 - **処理概要**:
-  1. Celery バックグラウンドタスク (`process_full_audio_pipeline_task`) に投函し、即座に 202 Accepted ＋ `task_id` を返却
+  1. Celery バックグラウンドタスク (`full_pipeline_task`) に投函し、即座に 202 Accepted ＋ `task_id` を返却
   2. Worker が MinIO から音声を取得
   3. Groq Whisper による日本語文字起こしセグメント生成
-  4. Pyannote Audio による話者分離タイムスタンプ取得
-  5. Llama 3 70B による Sales vs Customer 役割同定
-  6. DB (`transcripts`) への対話ログ一括保存
-  7. Gemini 2.5 Flash による成約率・S〜Eランク判定・関心点・懸念点・推奨アクション抽出 ＆ DB (`analysis_results`) への保存
+  4. Pyannote Audio による話者分離タイムスタンプ取得 ＆ 構造的話者役割同定（Sales vs Customer）
+  5. Generic LLM Proofreader（Gemini / Groq）による自律文脈テキスト校正（語頭削れ補正・誤音素修復）
+  6. DB (`transcripts`) への対話ログ一括保存 (旧データ全削除後インサート)
+  7. Gemini 3.6 Flash / Groq LLM による成約率・S〜Eランク判定・関心点・懸念点・推奨アクション抽出（日本語指示厳格適用） ＆ DB (`analysis_results`) への保存
 - **レスポンス (202 Accepted)**:
   ```json
   {
