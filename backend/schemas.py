@@ -9,6 +9,15 @@ class AnalysisResultBase(BaseModel):
     concerns: str = Field(..., description="顧客の懸念点、反論、またはボトルネック")
     recommended_action: str = Field(..., description="営業担当者が次にとるべき具体的な推奨アクション")
 
+class AnalysisScoreResponse(BaseModel):
+    interest_score: int = Field(..., ge=0, le=25)
+    need_score: int = Field(..., ge=0, le=25)
+    action_score: int = Field(..., ge=0, le=25)
+    risk_score: int = Field(..., ge=0, le=25)
+    customer_interest: str
+    concerns: str
+    recommended_action: str
+
 class AnalysisResultCreate(AnalysisResultBase):
     call_record_id: int
 

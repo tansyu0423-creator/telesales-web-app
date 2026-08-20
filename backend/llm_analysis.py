@@ -13,7 +13,7 @@ except ImportError:
     import schemas
 
 GROQ_TIMEOUT_SECONDS = 2.0
-MODEL_NAME = "llama3-70b-8192"
+MODEL_NAME = settings.groq_model
 client = Groq(api_key=settings.groq_api_key, timeout=GROQ_TIMEOUT_SECONDS) if settings.groq_api_key else None
 
 gemini_client = genai.Client(api_key=settings.gemini_api_key) if settings.gemini_api_key else None
@@ -434,27 +434,34 @@ def analyze_and_score_call(record_id: int, transcripts: List[Dict[str, Any]]) ->
     ・出力するすべての文章（`customer_interest`, `concerns`, `recommended_action`）は【必ず日本語】で記述してください。英語は絶対に使用しないでください。
 
     【数値算出指示 (ルーブリック細密評価)】
-    以下の4つの観点（各0〜25点）を個別に厳密に評価し、その合計点（0〜100）を `purchase_probability` としてください。
-    1. 顧客の関心・質問の積極性 (0〜25点)
-    2. 課題感・導入意欲の深さ (0〜25点)
-    3. 次回アクション・スケジュールの具体性 (0〜25点)
-    4. 懸念・反論リスクの少なさ (0〜25点)
+    以下の4つの観点を、対話中の具体的な発言を根拠に1点単位で個別採点してください。
+    各項目は0〜25点の整数とし、5点刻みに固定せず、会話の根拠に応じて1点単位で採点してください。
+    成約率はあなたが直接決めず、アプリ側で4項目を合計して算出します。
+    ランク閾値や過去の例の数値を採点根拠にせず、対話内容から毎回独立して評価してください。
+    1. `interest_score`: 顧客の関心・質問の積極性 (0〜25点)
+    2. `need_score`: 課題感・導入意欲の深さ (0〜25点)
+    3. `action_score`: 次回アクション・スケジュールの具体性 (0〜25点)
+    4. `risk_score`: 懸念・反論リスクの少なさ (0〜25点)
 
     【評価例 (Few-shot 判定サンプル)】
     ・例1 (Sランク・非常に有望):
       対話: 顧客「ぜひ導入したいです。来週月曜日に契約書を送ってください。」
       期待評価: 関心・課題感・次回アクションがすべて確定し懸念なし。
-      期待スコア (`purchase_probability`): 92 (観点1:24, 観点2:23, 観点3:23, 観点4:22)
+    採点例: interest_score=24, need_score=23, action_score=23, risk_score=22
 
     ・例2 (Bランク・検討中):
       対話: 顧客「興味はありますが、予算と社内検討が必要です。資料をいただけますか。」
       期待評価: 関心はあるが他社比較や予算調整が必要。
-      期待スコア (`purchase_probability`): 62 (観点1:18, 観点2:15, 観点3:14, 観点4:15)
+    採点例: interest_score=18, need_score=15, action_score=14, risk_score=15
 
     ・例3 (Eランク・不可行):
       対話: 顧客「すでに他社製品を長期契約したばかりで全く必要ありません。結構です。」
       期待評価: 明確な拒絶・ターゲット外。
-      期待スコア (`purchase_probability`): 5 (観点1:2, 観点2:1, 観点3:0, 観点4:2)
+            採点例: interest_score=2, need_score=1, action_score=0, risk_score=2
+
+        【出力形式】
+        rank と purchase_probability は出力せず、以下のキーを持つJSONのみを返してください。
+        interest_score, need_score, action_score, risk_score, customer_interest, concerns, recommended_action
 
     【対話ログ】
     {dialogue_text}
@@ -471,7 +478,7 @@ def analyze_and_score_call(record_id: int, transcripts: List[Dict[str, Any]]) ->
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
-                    response_schema=schemas.AnalysisResultBase, 
+                    response_schema=schemas.AnalysisScoreResponse,
                     temperature=0.1,
                 ),
             )
@@ -493,7 +500,7 @@ def analyze_and_score_call(record_id: int, transcripts: List[Dict[str, Any]]) ->
     if not result_dict and groq_client:
         try:
             print("Groq API でスコアリングを実行中...")
-            groq_prompt = prompt + "\n\n【重要】すべての出力テキストは【必ず日本語】で作成してください。英語禁止。出力は必ず以下のキーを持つJSONにしてください: {\"purchase_probability\": 0から100の数値, \"customer_interest\": \"日本語文字列\", \"concerns\": \"日本語文字列\", \"recommended_action\": \"日本語文字列\"}"
+            groq_prompt = prompt + "\n\n【重要】出力はJSONのみ。purchase_probability と rank は出力せず、interest_score、need_score、action_score、risk_score（各0〜25の1点単位の整数）、customer_interest、concerns、recommended_actionを返してください。文章は必ず日本語にしてください。"
             
             response = groq_client.chat.completions.create(
                 model=MODEL_NAME,
@@ -526,7 +533,14 @@ def analyze_and_score_call(record_id: int, transcripts: List[Dict[str, Any]]) ->
             recommended_action="APIの利用制限（429）または通信エラーが発生しました。時間を置いて再解析を実行してください。"
         )
 
-    prob = result_dict.get("purchase_probability", 50)
+    score_keys = ("interest_score", "need_score", "action_score", "risk_score")
+    if all(key in result_dict for key in score_keys):
+        try:
+            prob = sum(int(result_dict[key]) for key in score_keys)
+        except (TypeError, ValueError):
+            prob = 50
+    else:
+        prob = result_dict.get("purchase_probability", 50)
     try:
         prob_val = int(prob)
     except (ValueError, TypeError):
