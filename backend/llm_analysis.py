@@ -32,7 +32,7 @@ def call_openrouter_api(prompt: str) -> Dict[str, Any]:
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
-    groq_prompt = prompt + "\n\n出力は必ず以下のキーを持つJSON形式にしてください: {\"purchase_probability\": 0から100の数値, \"customer_interest\": \"文字列\", \"concerns\": \"文字列\", \"recommended_action\": \"文字列\"}"
+    groq_prompt = prompt + "\n\n【重要】出力はJSONのみ。purchase_probability と rank は出力せず、interest_score、need_score、action_score、risk_score（各0〜25の1点単位の整数）、customer_interest、concerns、recommended_actionを返してください。文章は必ず日本語にしてください。"
 
     payload = {
         "model": "mistralai/mistral-7b-instruct:free",
@@ -428,7 +428,7 @@ def analyze_and_score_call(record_id: int, transcripts: List[Dict[str, Any]]) ->
 
     prompt = f"""
     あなたはプロのインサイドセールス分析AIです。以下の電話営業の対話ログを細かく評価し、
-    顧客の成約意欲・成約率 (`purchase_probability`: 0〜100の数値) を算出してください。
+    顧客の成約意欲を4項目で採点してください。成約率はアプリケーション側で算出します。
 
     【言語指定（最優先指示）】
     ・出力するすべての文章（`customer_interest`, `concerns`, `recommended_action`）は【必ず日本語】で記述してください。英語は絶対に使用しないでください。
@@ -536,13 +536,14 @@ def analyze_and_score_call(record_id: int, transcripts: List[Dict[str, Any]]) ->
     score_keys = ("interest_score", "need_score", "action_score", "risk_score")
     if all(key in result_dict for key in score_keys):
         try:
-            prob = sum(int(result_dict[key]) for key in score_keys)
+            clamped_scores = [max(0, min(25, int(result_dict[key]))) for key in score_keys]
+            prob = sum(clamped_scores)
         except (TypeError, ValueError):
             prob = 50
     else:
         prob = result_dict.get("purchase_probability", 50)
     try:
-        prob_val = int(prob)
+        prob_val = max(0, min(100, int(prob)))
     except (ValueError, TypeError):
         prob_val = 50
 
