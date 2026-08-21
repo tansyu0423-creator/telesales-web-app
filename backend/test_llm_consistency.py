@@ -11,7 +11,7 @@ def test_analyze_and_score_call_few_shot_prompt_formatting():
     ]
 
     mock_gemini_response = MagicMock()
-    mock_gemini_response.text = '{"rank": "B", "purchase_probability": 62, "customer_interest": "高い", "concerns": "社内承認", "recommended_action": "資料送付"}'
+    mock_gemini_response.text = '{"interest_score": 18, "need_score": 15, "action_score": 14, "risk_score": 15, "customer_interest": "高い", "concerns": "社内承認", "recommended_action": "資料送付"}'
 
     with patch.object(llm_analysis, "gemini_client") as mock_gemini:
         mock_gemini.models.generate_content.return_value = mock_gemini_response
@@ -44,7 +44,7 @@ def test_llm_consistency_reproducibility_mock():
         {"speaker": "Customer", "text": "ぜひ契約を進めたいです。"}
     ]
     mock_gemini_response = MagicMock()
-    mock_gemini_response.text = '{"rank": "S", "purchase_probability": 92, "customer_interest": "非常に高い", "concerns": "なし", "recommended_action": "契約書送付"}'
+    mock_gemini_response.text = '{"interest_score": 24, "need_score": 23, "action_score": 23, "risk_score": 22, "customer_interest": "非常に高い", "concerns": "なし", "recommended_action": "契約書送付"}'
 
     with patch.object(llm_analysis, "gemini_client") as mock_gemini:
         mock_gemini.models.generate_content.return_value = mock_gemini_response

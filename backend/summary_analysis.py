@@ -91,7 +91,7 @@ def summarize_call(transcripts: List[Dict[str, Any]]) -> Dict[str, Any]:
         try:
             print("Groq API で要約分析を実行中...")
             response = groq_client.chat.completions.create(
-                model="llama3-70b-8192",
+                model=settings.groq_model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
                 response_format={"type": "json_object"}
