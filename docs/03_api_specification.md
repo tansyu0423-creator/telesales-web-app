@@ -24,8 +24,8 @@
 | `GET` | `/records/{record_id}` | Call Records | 指定IDの通話レコード詳細を取得 |
 | `DELETE` | `/records/{record_id}` | Call Records | 指定IDの通話レコードおよび関連ストレージ音声データの完全削除 |
 | `POST` | `/records/{record_id}/transcribe` | STT & Diarization | Whisper STT ＋ Pyannote話者分離 ＋ Llama3役割同定 ＋ Geminiスコアリングを一括実行 (Celery非同期) |
-| `POST` | `/records/{record_id}/summarize` | Analysis | Gemini 2.0 Flash による通話要約＆シグナル抽出 |
-| `POST` | `/records/{record_id}/score` | Analysis | Gemini Structured Output による S〜Eランクスコアリングの非同期実行 |
+| `POST` | `/records/{record_id}/summarize` | Analysis | Gemini 3.6 Flash / Groq による通話要約＆シグナル抽出 |
+| `POST` | `/records/{record_id}/score` | Analysis | Gemini/Groq Structured Output による4項目採点・S〜Eランクスコアリングの非同期実行 |
 | `GET` | `/tasks/{task_id}` | Task Status | バックグラウンドCeleryタスクのステータス確認 (PENDING/STARTED/SUCCESS/FAILURE) |
 | `GET` | `/records/{record_id}/export/csv` | Export | 通話メタデータ、成約率、AIスコア、対話文字起こしを含む CSV ダウンロード |
 
@@ -131,7 +131,7 @@
   4. Pyannote Audio による話者分離タイムスタンプ取得 ＆ 構造的話者役割同定（Sales vs Customer）
   5. Generic LLM Proofreader（Gemini / Groq）による自律文脈テキスト校正（語頭削れ補正・誤音素修復）
   6. DB (`transcripts`) への対話ログ一括保存 (旧データ全削除後インサート)
-  7. Gemini 3.6 Flash / Groq LLM による成約率・S〜Eランク判定・関心点・懸念点・推奨アクション抽出（日本語指示厳格適用） ＆ DB (`analysis_results`) への保存
+  7. Gemini 3.6 Flash / Groq LLM による4項目（関心・課題・次回行動・懸念リスク）の個別採点、合計成約率の算出、S〜Eランク判定、関心点・懸念点・推奨アクション抽出（日本語指示厳格適用） ＆ DB (`analysis_results`) への保存
 - **レスポンス (202 Accepted)**:
   ```json
   {
@@ -202,7 +202,7 @@
 
 #### ② システム環境・AI設定の取得 ＆ 更新
 `GET /settings/config` ｜ `POST /settings/config`
-- **概要**: Gemini / Groq / OpenRouter の API キー、ランク判定閾値 (S=90, A=70...)、およびカスタムプロンプト指示を取得・保存 (`system_config.json` へ保存)。
+- **概要**: Gemini / Groq / OpenRouter の API キー、ランク判定閾値 (S=90, A=70...)、およびカスタムプロンプト指示を取得・保存 (`system_config.json` へ保存)。Groqモデルの既定値は `openai/gpt-oss-20b` で、環境変数 `GROQ_MODEL` により変更可能。
 
 #### ③ ユーザー管理
 `GET /settings/users` ｜ `POST /settings/users` ｜ `DELETE /settings/users/{username}`
